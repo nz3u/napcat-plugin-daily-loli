@@ -5,7 +5,8 @@ node_modules/
 dist/
 
 # IDE
-.vscode/
+.vscode/*
+!.vscode/mcp.json
 .idea/
 *.swp
 *.swo
