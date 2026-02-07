@@ -13,6 +13,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   build:
@@ -58,13 +59,21 @@ jobs:
       - name: Build project
         run: pnpm run build
 
-      # TODO: 修改下面的 PLUGIN_NAME 为你的插件名称
       - name: Prepare release package
         env:
           PLUGIN_NAME: napcat-plugin-template
         run: |
-          cd dist
-          zip -r ../${PLUGIN_NAME}.zip .
+          # 创建临时目录用于组织文件
+          mkdir -p release
+
+          # 复制需要的文件到临时目录
+          cp dist/index.mjs release/
+          cp dist/package.json release/
+          cp -r dist/webui release/
+
+          # 进入临时目录并压缩
+          cd release
+          zip -r ../${PLUGIN_NAME}.zip index.mjs package.json webui
 
       - name: Verify zip contents
         run: |
@@ -96,7 +105,7 @@ jobs:
           echo "prev_tag=$PREV_TAG" >> $GITHUB_OUTPUT
 
       # （可选）AI 生成 Release Note
-      # 如需启用，请在仓库 Settings > Secrets 中配置：
+      # 如需启用，请在仓库 Settings > Secrets and variables > Actions > Repository secrets 中配置：
       #   AI_API_URL: 兼容 OpenAI 格式的 API 地址（如 https://api.openai.com/v1/chat/completions）
       #   AI_API_KEY: 对应的 API 密钥
       #   AI_MODEL:  （可选）模型名称，默认 gpt-4o-mini
@@ -124,31 +133,55 @@ jobs:
           AI_MODEL: ${{ secrets.AI_MODEL }}
         run: |
           CURRENT_TAG="${{ steps.gitlog.outputs.current_tag }}"
+          PREV_TAG="${{ steps.gitlog.outputs.prev_tag }}"
           COMMITS=$(cat commits.txt)
           MODEL="${AI_MODEL:-gpt-4o-mini}"
 
           echo "🤖 使用 AI 生成 Release Note (model: $MODEL)"
 
+          # 获取文件变更统计和代码 diff
+          SUMMARY_LINE=$(git diff --stat "$PREV_TAG"..HEAD | tail -1 || echo "No changes")
+          FILE_CHANGES=$(git diff --stat "$PREV_TAG"..HEAD | head -n -1 | head -30 || echo "")
+          CODE_DIFF=$(git diff "$PREV_TAG"..HEAD -- 'src/*.ts' | head -c 5000 || echo "Diff too large or no code changes")
+
           # 读取自定义 prompt 模板（如果存在）
           SYSTEM_PROMPT="你是一个专业的开发者助手，请根据以下 git commit 记录，生成简洁美观的中文 Release Note。要求：1) 使用 Markdown 格式 2) 按功能分类（如新功能、修复、优化等）3) 语言简洁 4) 版本号为 ${CURRENT_TAG}"
 
-          if [ -f ".github/prompt/ai-release-note.md" ]; then
-            SYSTEM_PROMPT=$(cat .github/prompt/ai-release-note.md | sed "s/{VERSION}/$CURRENT_TAG/g")
+          if [ -f ".github/prompt/release_note_prompt.txt" ]; then
+            SYSTEM_PROMPT=$(cat .github/prompt/release_note_prompt.txt)
           fi
+
+          USER_CONTENT="当前版本: $CURRENT_TAG
+          上一版本: $PREV_TAG
+          日期: $(date +'%Y-%m-%d')
+
+          ## 提交列表
+          $COMMITS
+
+          ## 文件变化统计
+          $SUMMARY_LINE
+
+          ## 变更文件列表
+          $FILE_CHANGES
+
+          ## 关键代码变化预览
+          \`\`\`diff
+          $CODE_DIFF
+          \`\`\`"
 
           # 构造请求 JSON
           PAYLOAD=$(jq -n \
             --arg model "$MODEL" \
             --arg system "$SYSTEM_PROMPT" \
-            --arg user "以下是 $CURRENT_TAG 版本的 git commit 记录，请生成 Release Note：\n\n$COMMITS" \
+            --arg user "$USER_CONTENT" \
             '{
               model: $model,
               messages: [
                 { role: "system", content: $system },
                 { role: "user", content: $user }
               ],
-              temperature: 0.7,
-              max_tokens: 1024
+              temperature: 0.2,
+              max_tokens: 1500
             }')
 
           # 调用 API
@@ -166,7 +199,10 @@ jobs:
             # 提取 AI 返回内容
             AI_CONTENT=$(echo "$BODY" | jq -r '.choices[0].message.content // empty')
             if [ -n "$AI_CONTENT" ]; then
-              echo "$AI_CONTENT" > CHANGELOG.md
+              echo -e "$AI_CONTENT" > CHANGELOG.md
+              # 替换占位符
+              sed -i "s/{VERSION}/$CURRENT_TAG/g" CHANGELOG.md
+              sed -i "s/{PREV_VERSION}/$PREV_TAG/g" CHANGELOG.md
               echo "ai_success=true" >> $GITHUB_OUTPUT
               echo "✅ AI Release Note 生成成功"
             else
@@ -195,7 +231,6 @@ jobs:
           fi
           echo "📝 使用默认 Release Note"
 
-      # TODO: 修改下面的 PLUGIN_NAME 为你的插件名称
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
@@ -207,3 +242,23 @@ jobs:
             napcat-plugin-template.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # 触发索引更新工作流
+      # 注意：默认 GITHUB_TOKEN 创建的 Release 不会触发 on.release 事件
+      # 因此需要手动通过 workflow_dispatch 触发 update-index.yml
+      - name: Trigger index update
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'update-index.yml',
+              ref: 'main',
+              inputs: {
+                version: '${{ steps.version.outputs.version }}'
+              }
+            })
+            console.log('✅ 已触发 update-index.yml 工作流')
