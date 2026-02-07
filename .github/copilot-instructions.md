@@ -79,7 +79,7 @@
 
 | 文件 | 职责 |
 |------|------|
-| `src/webui/dashboard.html` | 管理界面，用于配置和状态展示 |
+| `src/webui/index.html` | 管理界面，用于配置和状态展示 |
 
 ---
 
@@ -94,10 +94,19 @@ pnpm install
 # 类型检查
 pnpm run typecheck
 
-# 构建产物
+# 完整构建（前端 + 后端 + 资源复制，一步完成）
 pnpm run build
-# 输出: dist/index.mjs
+# 输出: dist/index.mjs + dist/package.json + dist/webui/
+
+# WebUI 前端开发服务器（自动代理到 NapCat）
+pnpm run dev:webui
 ```
+
+### CI/CD
+
+- `.github/workflows/release.yml`：推送 `v*` tag 自动构建并创建 GitHub Release
+- `.github/prompt/`：Release Note 模板和 AI 提示词
+- 构建产物由 `vite.config.ts` 中的 `copyAssetsPlugin` 自动处理（webui 复制 + 精简 package.json 生成）
 
 ---
 
