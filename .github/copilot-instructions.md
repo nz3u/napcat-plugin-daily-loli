@@ -105,6 +105,7 @@ pnpm run dev:webui
 ### CI/CD
 
 - `.github/workflows/release.yml`：推送 `v*` tag 自动构建并创建 GitHub Release
+- `.github/workflows/update-index.yml`：Release 发布后自动 fork 索引仓库、更新 `plugins.v4.json`，通过 `push-to-fork` 向官方索引仓库提交 PR（需配置 `INDEX_PAT` Secret）
 - `.github/prompt/`：Release Note 模板和 AI 提示词
 - 构建产物由 `vite.config.ts` 中的 `copyAssetsPlugin` 自动处理（webui 复制 + 精简 package.json 生成）
 

@@ -17,6 +17,7 @@ permissions:
 env:
   # ⚡ 目标索引仓库（NapNeko 组织下的插件索引）
   INDEX_REPO: NapNeko/napcat-plugin-index
+  INDEX_REPO_NAME: napcat-plugin-index
   INDEX_BRANCH: main
   INDEX_FILE: plugins.v4.json
 
@@ -102,6 +103,67 @@ jobs:
             fi
           fi
 
+      # ── Fork 索引仓库（如果尚未 fork） ──────────────────────────
+      - name: Ensure fork exists
+        id: fork
+        env:
+          GH_TOKEN: ${{ secrets.INDEX_PAT }}
+        run: |
+          # 获取 PAT 对应的 GitHub 用户名
+          PAT_USER=$(curl -sS -H "Authorization: token ${GH_TOKEN}" \
+            https://api.github.com/user | jq -r '.login')
+          if [ -z "$PAT_USER" ] || [ "$PAT_USER" = "null" ]; then
+            echo "❌ 无法获取 PAT 对应的 GitHub 用户名，请检查 INDEX_PAT 是否有效"
+            exit 1
+          fi
+          echo "pat_user=$PAT_USER" >> $GITHUB_OUTPUT
+
+          FORK_REPO="${PAT_USER}/${{ env.INDEX_REPO_NAME }}"
+          echo "fork_repo=$FORK_REPO" >> $GITHUB_OUTPUT
+          echo "👤 PAT 用户: $PAT_USER"
+          echo "🍴 Fork 仓库: $FORK_REPO"
+
+          # 检查 fork 是否已存在
+          HTTP_CODE=$(curl -sS -o /dev/null -w "%{http_code}" \
+            -H "Authorization: token ${GH_TOKEN}" \
+            "https://api.github.com/repos/${FORK_REPO}")
+
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "✅ Fork 已存在: $FORK_REPO"
+          else
+            echo "🍴 Fork 不存在，正在创建..."
+            FORK_RESULT=$(curl -sS -X POST \
+              -H "Authorization: token ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ env.INDEX_REPO }}/forks" \
+              -d '{"default_branch_only": true}')
+
+            FORK_FULL_NAME=$(echo "$FORK_RESULT" | jq -r '.full_name')
+            if [ -z "$FORK_FULL_NAME" ] || [ "$FORK_FULL_NAME" = "null" ]; then
+              echo "❌ Fork 创建失败:"
+              echo "$FORK_RESULT" | jq .
+              exit 1
+            fi
+            echo "✅ Fork 创建成功: $FORK_FULL_NAME"
+
+            # 等待 fork 完成初始化
+            echo "⏳ 等待 fork 初始化..."
+            sleep 10
+          fi
+
+      # ── 同步 fork 到上游最新 ───────────────────────────────────
+      - name: Sync fork with upstream
+        env:
+          GH_TOKEN: ${{ secrets.INDEX_PAT }}
+        run: |
+          echo "🔄 同步 fork 到上游最新..."
+          SYNC_RESULT=$(curl -sS -X POST \
+            -H "Authorization: token ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ steps.fork.outputs.fork_repo }}/merge-upstream" \
+            -d '{"branch": "${{ env.INDEX_BRANCH }}"}')
+          echo "$SYNC_RESULT" | jq -r '.message // "已同步"'
+
       - name: Checkout index repo
         uses: actions/checkout@v4
         with:
@@ -159,11 +221,13 @@ jobs:
             console.log('✅ plugins.v4.json 已更新');
           "
 
+      # ── 通过 fork 提交 PR 到官方索引仓库 ─────────────────────────
       - name: Create Pull Request
         uses: peter-evans/create-pull-request@v6
         with:
           path: plugin-index
           token: ${{ secrets.INDEX_PAT }}
+          push-to-fork: ${{ steps.fork.outputs.fork_repo }}
           commit-message: "chore: update ${{ steps.meta.outputs.plugin_id }} to v${{ steps.meta.outputs.version }}"
           branch: "auto-update/${{ steps.meta.outputs.plugin_id }}-v${{ steps.meta.outputs.version }}"
           delete-branch: true
