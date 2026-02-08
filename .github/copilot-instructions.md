@@ -185,26 +185,66 @@ pnpm run dev:webui
 
 ```bash
 # 一键部署：构建 → 自动复制到远程插件目录 → 自动重载
-pnpm run deploy
+pnpm run push
 
 # 开发模式：watch 构建 + 每次构建后自动部署 + 热重载（单进程）
 pnpm run dev
 ```
 
-> `deploy` = `vite build`（构建完成时 Vite 插件自动部署+重载）  
+> `push` = `vite build`（构建完成时 Vite 插件自动部署+重载）  
 > `dev` = `vite build --watch`（每次重新构建后 Vite 插件自动部署+重载）
 
 ### 配置说明
 
 `vite.config.ts` 中的 `napcatHmrPlugin()` 会在每次 `writeBundle` 时自动：连接调试服务 → 获取远程插件目录 → 复制 dist/ → 调用 reloadPlugin。
 
-如需自定义调试服务地址或 token：
+#### WebUI 监控与自动部署
+
+`napcatHmrPlugin` 支持 `webui` 配置项，可在每次主插件构建完成时自动构建并部署 WebUI 前端产物。本模板已预配置：
 
 ```typescript
 // vite.config.ts
 napcatHmrPlugin({
+    webui: {
+        root: './src/webui',           // WebUI 项目根目录（用于执行构建命令的 cwd）
+        buildCommand: 'pnpm install && pnpm run build',  // 构建命令
+        distDir: './src/webui/dist',   // WebUI 构建产物目录
+        targetDir: 'webui',            // 部署到远程插件目录中的子目录名
+    },
+})
+```
+
+每次 `writeBundle` 时的完整流程：
+1. 连接调试服务（WebSocket）
+2. 获取远程插件目录路径
+3. 复制 `dist/` 主构建产物到远程
+4. 执行 WebUI `buildCommand`（如果配置了）
+5. 复制 WebUI 构建产物到远程插件目录的 `webui/` 子目录
+6. 调用 `reloadPlugin` 热重载插件
+
+如需自定义调试服务地址或 token：
+
+```typescript
+napcatHmrPlugin({
     wsUrl: 'ws://192.168.1.100:8998',
     token: 'mySecret',
+    webui: {
+        root: './src/webui',
+        buildCommand: 'pnpm install && pnpm run build',
+        distDir: './src/webui/dist',
+        targetDir: 'webui',
+    },
+})
+```
+
+如果是纯 HTML 的 WebUI（无需构建），省略 `buildCommand` 即可：
+
+```typescript
+napcatHmrPlugin({
+    webui: {
+        distDir: './webui',
+        targetDir: 'webui',
+    },
 })
 ```
 
@@ -214,11 +254,24 @@ napcatHmrPlugin({
 # 独立运行 CLI，进入交互模式（REPL）
 npx napcat-debug
 
+# 常用参数
+npx napcat-debug ws://host:port     # 指定调试服务地址
+npx napcat-debug -t mySecret        # 带认证 token
+npx napcat-debug -w ./my-plugin     # 监听目录自动热重载
+npx napcat-debug -W                 # 监听远程所有插件
+npx napcat-debug -d [dir]           # 部署插件到远程并重载
+
 # 交互命令
-debug> list              # 列出所有插件
-debug> deploy            # 部署当前目录插件
+debug> list              # 列出所有插件及其状态
 debug> reload <id>       # 重载指定插件
-debug> status            # 查看服务状态
+debug> load <id>         # 加载指定插件
+debug> unload <id>       # 卸载指定插件
+debug> info <id>         # 查看插件详细信息
+debug> deploy [dir]      # 部署插件到远程并重载
+debug> watch <dir>       # 开始监听目录
+debug> unwatch           # 停止监听
+debug> status            # 查看调试服务状态
+debug> ping              # 心跳测试
 ```
 
 ---

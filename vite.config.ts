@@ -121,5 +121,12 @@ export default defineConfig({
         },
         outDir: 'dist',
     },
-    plugins: [nodeResolve(), copyAssetsPlugin(), napcatHmrPlugin()],
+    plugins: [nodeResolve(), copyAssetsPlugin(), napcatHmrPlugin({
+        webui: {
+            root: './src/webui',
+            buildCommand: 'pnpm install && pnpm run build',
+            distDir: './src/webui/dist',
+            targetDir: 'webui',
+        },
+    })],
 });

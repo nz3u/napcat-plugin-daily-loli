@@ -39,6 +39,7 @@
     "watch": "vite build --watch",
     "dev": "vite build --watch",
     "push": "vite build",
+    "deploy": "vite build",
     "typecheck": "tsc --noEmit"
   }
 }
