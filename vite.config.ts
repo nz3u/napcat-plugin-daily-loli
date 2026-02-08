@@ -4,6 +4,7 @@ import nodeResolve from '@rollup/plugin-node-resolve';
 import { builtinModules } from 'module';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
+import { napcatHmrPlugin } from 'napcat-plugin-debug-cli/vite';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -120,5 +121,5 @@ export default defineConfig({
         },
         outDir: 'dist',
     },
-    plugins: [nodeResolve(), copyAssetsPlugin()],
+    plugins: [nodeResolve(), copyAssetsPlugin(), napcatHmrPlugin()],
 });
