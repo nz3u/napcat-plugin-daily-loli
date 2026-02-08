@@ -4,6 +4,7 @@ import nodeResolve from '@rollup/plugin-node-resolve';
 import { builtinModules } from 'module';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
+import { execSync } from 'child_process';
 import { napcatHmrPlugin } from 'napcat-plugin-debug-cli/vite';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -48,7 +49,23 @@ function copyAssetsPlugin() {
             try {
                 const distDir = resolve(__dirname, 'dist');
 
-                // 1. 复制 webui 构建产物
+                // 1. 构建 WebUI 前端
+                const webuiRoot = resolve(__dirname, 'src/webui');
+                try {
+                    console.log('[copy-assets] (o\'v\'o) 正在构建 WebUI...');
+                    const webuiEnv = { ...process.env };
+                    delete webuiEnv.NODE_ENV;
+                    execSync('pnpm run build', {
+                        cwd: webuiRoot,
+                        stdio: 'pipe',
+                        env: webuiEnv,
+                    });
+                    console.log('[copy-assets] (o\'v\'o) WebUI 构建完成');
+                } catch (e: any) {
+                    console.error('[copy-assets] (;_;) WebUI 构建失败:', e.stdout?.toString().slice(-300) || e.message);
+                }
+
+                // 2. 复制 webui 构建产物
                 const webuiDist = resolve(__dirname, 'src/webui/dist');
                 const webuiDest = resolve(distDir, 'webui');
                 if (fs.existsSync(webuiDist)) {
