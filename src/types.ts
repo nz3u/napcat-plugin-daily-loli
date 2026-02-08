@@ -1,11 +1,17 @@
 /**
  * 类型定义文件
- * 定义插件所需的所有接口和类型
+ * 定义插件内部使用的接口和类型
+ *
+ * 注意：OneBot 相关类型（OB11Message, OB11PostSendMsg 等）
+ * 以及插件框架类型（NapCatPluginContext, PluginModule 等）
+ * 均来自 napcat-types 包，无需在此重复定义。
  */
+
+// ==================== 插件配置 ====================
 
 /**
  * 插件主配置接口
- * 根据你的插件需求添加配置项
+ * 在此定义你的插件所需的所有配置项
  */
 export interface PluginConfig {
     /** 全局开关：是否启用插件功能 */
@@ -17,7 +23,7 @@ export interface PluginConfig {
     /** 同一命令请求冷却时间（秒），0 表示不限制 */
     cooldownSeconds: number;
     /** 按群的单独配置 */
-    groupConfigs?: Record<string, GroupConfig>;
+    groupConfigs: Record<string, GroupConfig>;
     // TODO: 在这里添加你的插件配置项
 }
 
@@ -30,62 +36,16 @@ export interface GroupConfig {
     // TODO: 在这里添加群级别的配置项
 }
 
+// ==================== API 响应 ====================
+
 /**
- * API 响应格式
+ * 统一 API 响应格式
  */
 export interface ApiResponse<T = unknown> {
+    /** 状态码，0 表示成功，-1 表示失败 */
     code: number;
+    /** 错误信息（仅错误时返回） */
     message?: string;
+    /** 响应数据（仅成功时返回） */
     data?: T;
-}
-
-// ==================== 消息段类型 ====================
-
-/**
- * 文本消息段
- */
-export interface TextSegment {
-    type: 'text';
-    data: { text: string };
-}
-
-/**
- * 图片消息段
- */
-export interface ImageSegment {
-    type: 'image';
-    data: { file: string };
-}
-
-/**
- * @消息段
- */
-export interface AtSegment {
-    type: 'at';
-    data: { qq: string };
-}
-
-/**
- * 回复消息段
- */
-export interface ReplySegment {
-    type: 'reply';
-    data: { id: string };
-}
-
-/**
- * 通用消息段类型
- */
-export type MessageSegment = TextSegment | ImageSegment | AtSegment | ReplySegment | { type: string; data: Record<string, unknown> };
-
-/**
- * 合并转发消息节点
- */
-export interface ForwardNode {
-    type: 'node';
-    data: {
-        user_id: string;
-        nickname: string;
-        content: MessageSegment[];
-    };
 }
