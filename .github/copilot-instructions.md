@@ -175,6 +175,54 @@ pnpm run build
 pnpm run dev:webui
 ```
 
+---
+
+## 热重载开发说明
+
+本模板已集成热重载开发能力，极大提升插件开发效率。依赖 Vite 插件 `napcatHmrPlugin`（已在 `vite.config.ts` 配置），需配合 NapCat 端安装并启用 `napcat-plugin-debug` 插件。
+
+### 常用命令
+
+```bash
+# 一键部署：构建 → 自动复制到远程插件目录 → 自动重载
+pnpm run deploy
+
+# 开发模式：watch 构建 + 每次构建后自动部署 + 热重载（单进程）
+pnpm run dev
+```
+
+> `deploy` = `vite build`（构建完成时 Vite 插件自动部署+重载）  
+> `dev` = `vite build --watch`（每次重新构建后 Vite 插件自动部署+重载）
+
+### 配置说明
+
+`vite.config.ts` 中的 `napcatHmrPlugin()` 会在每次 `writeBundle` 时自动：连接调试服务 → 获取远程插件目录 → 复制 dist/ → 调用 reloadPlugin。
+
+如需自定义调试服务地址或 token：
+
+```typescript
+// vite.config.ts
+napcatHmrPlugin({
+    wsUrl: 'ws://192.168.1.100:8998',
+    token: 'mySecret',
+})
+```
+
+### CLI 交互模式（可选）
+
+```bash
+# 独立运行 CLI，进入交互模式（REPL）
+npx napcat-debug
+
+# 交互命令
+debug> list              # 列出所有插件
+debug> deploy            # 部署当前目录插件
+debug> reload <id>       # 重载指定插件
+debug> status            # 查看服务状态
+```
+
+---
+
 ### CI/CD
 
 - `.github/workflows/release.yml`：推送 `v*` tag 自动构建并创建 GitHub Release
@@ -300,6 +348,30 @@ const schema = ctx.NapCatConfig.combine(
 - **资源清理**：在 `plugin_cleanup` 中必须清理定时器、关闭连接，否则会导致内存泄漏
 - **数据存储**：使用 `ctx.dataPath` 获取插件专属数据目录
 - **插件间通信**：使用 `ctx.getPluginExports<T>(pluginId)` 获取其他插件的导出
+
+### 图标与表情约定
+
+- **禁止使用 emoji**：代码中不要使用 Unicode emoji 字符（如 `📁`、`🚀`、`✅` 等）
+- **后端日志**：如需要输出装饰性字符，使用颜文字（kaomoji），例如：
+  ```typescript
+  ctx.logger.info('(｡･ω･｡) 插件初始化完成');
+  ctx.logger.warn('(；′⌒`) 配置项缺失，使用默认值');
+  ctx.logger.error('(╥﹏╥) 连接失败');
+  ```
+- **前端图标**：使用 SVG 图标，不要使用 emoji。推荐方式：
+  - 将 SVG 封装为 React 组件（参考 `src/webui/src/components/icons.tsx`）
+  - 或使用 inline SVG `<svg>` 标签
+  ```tsx
+  // 正确：SVG 图标组件
+  export const CheckIcon = () => (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
+          <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" />
+      </svg>
+  );
+
+  // 错误：使用 emoji
+  // <span>✅</span>
+  ```
 
 ---
 
