@@ -1,75 +1,49 @@
 /**
- * 状态管理模块
- * 插件全局状态类，封装配置、日志、上下文等
+ * 全局状态管理模块（单例模式）
+ *
+ * 封装插件的配置持久化和运行时状态，提供在项目任意位置访问
+ * ctx、config、logger 等对象的能力，无需逐层传递参数。
+ *
+ * 使用方法：
+ *   import { pluginState } from '../core/state';
+ *   pluginState.config.enabled;       // 读取配置
+ *   pluginState.ctx.logger.info(...); // 使用日志
  */
 
 import fs from 'fs';
 import path from 'path';
 import type { NapCatPluginContext, PluginLogger } from 'napcat-types/napcat-onebot/network/plugin/types';
-import type { ActionMap } from 'napcat-types/napcat-onebot/action/index';
-import type { NetworkAdapterConfig } from 'napcat-types/napcat-onebot/config/config';
-import { DEFAULT_CONFIG, getDefaultConfig } from '../config';
+import { DEFAULT_CONFIG } from '../config';
 import type { PluginConfig, GroupConfig } from '../types';
 
-/** 日志前缀 - 修改为你的插件名称 */
-const LOG_TAG = '[Plugin]';
+// ==================== 配置清洗工具 ====================
 
-// ==================== 类型安全的清洗辅助函数 ====================
-
-/** 安全提取 boolean 值 */
-function safeBool(obj: Record<string, unknown>, key: string): boolean | undefined {
-    return typeof obj[key] === 'boolean' ? obj[key] as boolean : undefined;
-}
-
-/** 安全提取 string 值 */
-function safeStr(obj: Record<string, unknown>, key: string): string | undefined {
-    return typeof obj[key] === 'string' ? obj[key] as string : undefined;
-}
-
-/** 安全提取 number 值 */
-function safeNum(obj: Record<string, unknown>, key: string): number | undefined {
-    return typeof obj[key] === 'number' ? obj[key] as number : undefined;
-}
-
-/** 类型守卫：判断是否为对象 */
 function isObject(v: unknown): v is Record<string, unknown> {
-    return v !== null && typeof v === 'object';
+    return v !== null && typeof v === 'object' && !Array.isArray(v);
 }
 
 /**
  * 配置清洗函数
- * 确保从文件读取的配置符合预期类型
+ * 确保从文件读取的配置符合预期类型，防止运行时错误
  */
 function sanitizeConfig(raw: unknown): PluginConfig {
-    if (!isObject(raw)) return getDefaultConfig();
-    const r = raw as Record<string, unknown>;
-    const out: PluginConfig = getDefaultConfig();
+    if (!isObject(raw)) return { ...DEFAULT_CONFIG, groupConfigs: {} };
 
-    // 基础配置
-    const enabled = safeBool(r, 'enabled');
-    if (enabled !== undefined) out.enabled = enabled;
+    const out: PluginConfig = { ...DEFAULT_CONFIG, groupConfigs: {} };
 
-    const debug = safeBool(r, 'debug');
-    if (debug !== undefined) out.debug = debug;
+    if (typeof raw.enabled === 'boolean') out.enabled = raw.enabled;
+    if (typeof raw.debug === 'boolean') out.debug = raw.debug;
+    if (typeof raw.commandPrefix === 'string') out.commandPrefix = raw.commandPrefix;
+    if (typeof raw.cooldownSeconds === 'number') out.cooldownSeconds = raw.cooldownSeconds;
 
-    const commandPrefix = safeStr(r, 'commandPrefix');
-    if (commandPrefix !== undefined) out.commandPrefix = commandPrefix;
-
-    const cooldownSeconds = safeNum(r, 'cooldownSeconds');
-    if (cooldownSeconds !== undefined) out.cooldownSeconds = cooldownSeconds;
-
-    // 群配置
-    const rawGroupConfigs = r['groupConfigs'];
-    if (isObject(rawGroupConfigs)) {
-        out.groupConfigs = {};
-        for (const groupId of Object.keys(rawGroupConfigs as Record<string, unknown>)) {
-            const groupConfig = (rawGroupConfigs as Record<string, unknown>)[groupId];
+    // 群配置清洗
+    if (isObject(raw.groupConfigs)) {
+        for (const [groupId, groupConfig] of Object.entries(raw.groupConfigs)) {
             if (isObject(groupConfig)) {
-                const gc = groupConfig as Record<string, unknown>;
                 const cfg: GroupConfig = {};
-                const gcEnabled = safeBool(gc, 'enabled');
-                if (gcEnabled !== undefined) cfg.enabled = gcEnabled;
-                out.groupConfigs![groupId] = cfg;
+                if (typeof groupConfig.enabled === 'boolean') cfg.enabled = groupConfig.enabled;
+                // TODO: 在这里添加你的群配置项清洗
+                out.groupConfigs[groupId] = cfg;
             }
         }
     }
@@ -79,122 +53,140 @@ function sanitizeConfig(raw: unknown): PluginConfig {
     return out;
 }
 
-/**
- * 插件全局状态类
- * 封装配置、日志、上下文等，提供统一的状态管理接口
- */
+// ==================== 插件全局状态类 ====================
+
 class PluginState {
-    /** 日志器 */
-    logger: PluginLogger | null = null;
-    /** NapCat actions 对象，用于调用 API */
-    actions: ActionMap | undefined;
-    /** 适配器名称 */
-    adapterName: string = '';
-    /** 网络配置 */
-    networkConfig: NetworkAdapterConfig | null = null;
+    /** NapCat 插件上下文（init 后可用） */
+    private _ctx: NapCatPluginContext | null = null;
+
     /** 插件配置 */
     config: PluginConfig = { ...DEFAULT_CONFIG };
-    /** 配置文件路径 */
-    configPath: string = '';
-    /** 数据目录路径 */
-    dataPath: string = '';
-    /** 插件名称 */
-    pluginName: string = '';
+
     /** 插件启动时间戳 */
     startTime: number = 0;
-    /** 是否已初始化 */
-    initialized: boolean = false;
-    /** 统计信息 */
-    stats: {
-        processed: number;
-        todayProcessed: number;
-        lastUpdateDay: string;
-    } = {
-            processed: 0,
-            todayProcessed: 0,
-            lastUpdateDay: new Date().toDateString()
-        };
 
-    /**
-     * 通用日志方法
-     */
-    log(level: 'info' | 'warn' | 'error', msg: string, ...args: unknown[]): void {
-        if (!this.logger) return;
-        this.logger[level](`${LOG_TAG} ${msg}`, ...args);
+    /** 运行时统计 */
+    stats = {
+        processed: 0,
+        todayProcessed: 0,
+        lastUpdateDay: new Date().toDateString(),
+    };
+
+    /** 获取上下文（确保已初始化） */
+    get ctx(): NapCatPluginContext {
+        if (!this._ctx) throw new Error('PluginState 尚未初始化，请先调用 init()');
+        return this._ctx;
     }
 
-    /**
-     * 调试日志
-     * 只有当 debug 配置开启时才输出
-     */
-    logDebug(msg: string, ...args: unknown[]): void {
-        if (!this.config.debug) return;
-        if (this.logger) {
-            this.logger.info(`${LOG_TAG} [DEBUG] ${msg}`, ...args);
-        }
+    /** 获取日志器的快捷方式 */
+    get logger(): PluginLogger {
+        return this.ctx.logger;
     }
 
-    /**
-     * 调用 OneBot API
-     * @param api API 名称
-     * @param params 参数
-     * @returns API 返回结果
-     */
-    async callApi(api: string, params: Record<string, unknown>): Promise<unknown> {
-        if (!this.actions) {
-            this.log('error', `调用 API ${api} 失败: actions 未初始化`);
-            return null;
-        }
-        try {
-            const result = await this.actions.call(api as 'get_status', params, this.adapterName, this.networkConfig!);
-            return result;
-        } catch (error) {
-            this.log('error', `调用 API ${api} 失败:`, error);
-            throw error;
-        }
-    }
+    // ==================== 生命周期 ====================
 
     /**
-     * 从 ctx 初始化状态
+     * 初始化（在 plugin_init 中调用）
      */
-    initFromContext(ctx: NapCatPluginContext): void {
-        this.logger = ctx.logger;
-        this.actions = ctx.actions;
-        this.adapterName = ctx.adapterName || '';
-        this.networkConfig = ctx.pluginManager?.config || null;
-        this.configPath = ctx.configPath || '';
-        this.pluginName = ctx.pluginName || '';
-        this.dataPath = ctx.configPath ? path.dirname(ctx.configPath) : path.join(process.cwd(), 'data', 'napcat-plugin');
+    init(ctx: NapCatPluginContext): void {
+        this._ctx = ctx;
         this.startTime = Date.now();
+        this.loadConfig();
     }
 
     /**
-     * 获取运行时长（毫秒）
+     * 清理（在 plugin_cleanup 中调用）
      */
-    getUptime(): number {
-        return Date.now() - this.startTime;
+    cleanup(): void {
+        this.saveConfig();
+        this._ctx = null;
+    }
+
+    // ==================== 配置管理 ====================
+
+    /**
+     * 从磁盘加载配置
+     */
+    loadConfig(): void {
+        const configPath = this.ctx.configPath;
+        try {
+            if (configPath && fs.existsSync(configPath)) {
+                const raw = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+                this.config = sanitizeConfig(raw);
+                // 加载统计信息
+                if (isObject(raw) && isObject(raw.stats)) {
+                    Object.assign(this.stats, raw.stats);
+                }
+                this.ctx.logger.debug('已加载本地配置');
+            } else {
+                this.config = { ...DEFAULT_CONFIG, groupConfigs: {} };
+                this.saveConfig();
+                this.ctx.logger.debug('配置文件不存在，已创建默认配置');
+            }
+        } catch (error) {
+            this.ctx.logger.error('加载配置失败，使用默认配置:', error);
+            this.config = { ...DEFAULT_CONFIG, groupConfigs: {} };
+        }
     }
 
     /**
-     * 获取格式化的运行时长
+     * 保存配置到磁盘
      */
-    getUptimeFormatted(): string {
-        const uptime = this.getUptime();
-        const seconds = Math.floor(uptime / 1000);
-        const minutes = Math.floor(seconds / 60);
-        const hours = Math.floor(minutes / 60);
-        const days = Math.floor(hours / 24);
-
-        if (days > 0) return `${days}天${hours % 24}小时`;
-        if (hours > 0) return `${hours}小时${minutes % 60}分钟`;
-        if (minutes > 0) return `${minutes}分钟${seconds % 60}秒`;
-        return `${seconds}秒`;
+    saveConfig(): void {
+        if (!this._ctx) return;
+        const configPath = this._ctx.configPath;
+        try {
+            const configDir = path.dirname(configPath);
+            if (!fs.existsSync(configDir)) {
+                fs.mkdirSync(configDir, { recursive: true });
+            }
+            const data = { ...this.config, stats: this.stats };
+            fs.writeFileSync(configPath, JSON.stringify(data, null, 2), 'utf-8');
+        } catch (error) {
+            this._ctx.logger.error('保存配置失败:', error);
+        }
     }
+
+    /**
+     * 合并更新配置
+     */
+    updateConfig(partial: Partial<PluginConfig>): void {
+        this.config = { ...this.config, ...partial };
+        this.saveConfig();
+    }
+
+    /**
+     * 完整替换配置
+     */
+    replaceConfig(config: PluginConfig): void {
+        this.config = sanitizeConfig(config);
+        this.saveConfig();
+    }
+
+    /**
+     * 更新指定群的配置
+     */
+    updateGroupConfig(groupId: string, config: Partial<GroupConfig>): void {
+        this.config.groupConfigs[groupId] = {
+            ...this.config.groupConfigs[groupId],
+            ...config,
+        };
+        this.saveConfig();
+    }
+
+    /**
+     * 检查群是否启用（默认启用，除非明确设置为 false）
+     */
+    isGroupEnabled(groupId: string): boolean {
+        return this.config.groupConfigs[groupId]?.enabled !== false;
+    }
+
+    // ==================== 统计 ====================
 
     /**
      * 增加处理计数
      */
-    incrementProcessedCount(): void {
+    incrementProcessed(): void {
         const today = new Date().toDateString();
         if (this.stats.lastUpdateDay !== today) {
             this.stats.todayProcessed = 0;
@@ -205,103 +197,25 @@ class PluginState {
         this.saveConfig();
     }
 
-    /**
-     * 加载配置
-     */
-    loadConfig(ctx?: NapCatPluginContext): void {
-        const configPath = ctx?.configPath || this.configPath;
-        try {
-            if (typeof configPath === 'string' && fs.existsSync(configPath)) {
-                const raw = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-                this.config = { ...getDefaultConfig(), ...sanitizeConfig(raw) };
-                // 加载统计信息
-                if (raw.stats) {
-                    this.stats = { ...this.stats, ...raw.stats };
-                }
-                this.logDebug('📄 已加载本地配置', { path: configPath });
-            } else {
-                this.config = getDefaultConfig();
-                this.saveConfig(ctx);
-                this.logDebug('📄 配置文件不存在，已创建默认配置', { path: configPath });
-            }
-        } catch (error) {
-            this.log('error', '❌ 加载配置失败，使用默认配置:', error);
-            this.config = getDefaultConfig();
-        }
-        this.initialized = true;
+    // ==================== 工具方法 ====================
+
+    /** 获取运行时长（毫秒） */
+    getUptime(): number {
+        return Date.now() - this.startTime;
     }
 
-    /**
-     * 保存配置
-     */
-    saveConfig(ctx?: NapCatPluginContext, config?: PluginConfig): void {
-        const configPath = ctx?.configPath || this.configPath;
-        const configToSave = config || this.config;
-        try {
-            const configDir = path.dirname(String(configPath || './'));
-            if (!fs.existsSync(configDir)) {
-                fs.mkdirSync(configDir, { recursive: true });
-            }
-            // 合并统计信息一起保存
-            const dataToSave = {
-                ...configToSave,
-                stats: this.stats
-            };
-            fs.writeFileSync(
-                String(configPath),
-                JSON.stringify(dataToSave, null, 2),
-                'utf-8'
-            );
-            this.logDebug('💾 配置已保存', { path: configPath });
-        } catch (error) {
-            this.log('error', '❌ 保存配置失败:', error);
-        }
-    }
+    /** 获取格式化的运行时长 */
+    getUptimeFormatted(): string {
+        const ms = this.getUptime();
+        const s = Math.floor(ms / 1000);
+        const m = Math.floor(s / 60);
+        const h = Math.floor(m / 60);
+        const d = Math.floor(h / 24);
 
-    /**
-     * 获取配置（不包含敏感信息）
-     */
-    getConfig(): PluginConfig {
-        return { ...this.config };
-    }
-
-    /**
-     * 设置配置（合并更新）
-     */
-    setConfig(ctx: NapCatPluginContext, update: Partial<PluginConfig>): void {
-        this.config = { ...this.config, ...update };
-        this.saveConfig(ctx);
-    }
-
-    /**
-     * 替换配置（完整替换）
-     */
-    replaceConfig(ctx: NapCatPluginContext, config: PluginConfig): void {
-        this.config = sanitizeConfig(config);
-        this.saveConfig(ctx);
-    }
-
-    /**
-     * 更新群配置
-     */
-    updateGroupConfig(ctx: NapCatPluginContext, groupId: string, config: GroupConfig): void {
-        if (!this.config.groupConfigs) {
-            this.config.groupConfigs = {};
-        }
-        this.config.groupConfigs[groupId] = {
-            ...this.config.groupConfigs[groupId],
-            ...config
-        };
-        this.saveConfig(ctx);
-    }
-
-    /**
-     * 检查群是否启用
-     */
-    isGroupEnabled(groupId: string): boolean {
-        const groupConfig = this.config.groupConfigs?.[groupId];
-        // 默认启用，除非明确设置为 false
-        return groupConfig?.enabled !== false;
+        if (d > 0) return `${d}天${h % 24}小时`;
+        if (h > 0) return `${h}小时${m % 60}分钟`;
+        if (m > 0) return `${m}分钟${s % 60}秒`;
+        return `${s}秒`;
     }
 }
 
