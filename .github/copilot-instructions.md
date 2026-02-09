@@ -546,7 +546,7 @@ ctx.logger.warn(`(；′⌒\`) 配置项缺失`);      // 转义方式
 ### WebUI 前端开发风格
 
 - **主题色**：统一使用粉色系（`primary: #FB7299`），参考 `tailwind.config.js` 中的 `brand` 色阶（`brand-50` ~ `brand-900`）
-- **禁止渐变配色**：不要使用 CSS 渐变（`linear-gradient`、`radial-gradient` 等）作为背景或装饰。使用纯色代替
+- **禁止渐变配色**：不要使用 CSS 渐变（`linear-gradient`、`radial-gradient` 等）作为背景或装饰。使用纯色代替。配置 Schema 头部 HTML 统一使用 `background: #FB7299`（主题粉色），不要用渐变
 - **延续现有风格**：新增页面和组件应与现有 WebUI 保持一致的设计语言：
   - 卡片使用 `.card` 样式类（白底圆角 + 细边框 + 微阴影）
   - 激活态/选中态使用 `bg-primary text-white`

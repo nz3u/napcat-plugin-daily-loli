@@ -33,9 +33,9 @@ export function buildConfigSchema(ctx: NapCatPluginContext): PluginConfigSchema 
     return ctx.NapCatConfig.combine(
         // 插件信息头部
         ctx.NapCatConfig.html(`
-            <div style="padding: 16px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 12px; margin-bottom: 20px; color: white;">
-                <h3 style="margin: 0 0 8px 0; font-size: 18px; font-weight: bold;">插件模板</h3>
-                <p style="margin: 0; font-size: 14px; opacity: 0.9;">这是一个 NapCat 插件开发模板，请根据需要修改配置。</p>
+            <div style="padding: 16px; background: #FB7299; border-radius: 12px; margin-bottom: 20px; color: white;">
+                <h3 style="margin: 0 0 6px 0; font-size: 18px; font-weight: 600;">插件模板</h3>
+                <p style="margin: 0; font-size: 13px; opacity: 0.85;">NapCat 插件开发模板，请根据需要修改配置</p>
             </div>
         `),
         // 全局开关
