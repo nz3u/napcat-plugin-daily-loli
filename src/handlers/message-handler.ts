@@ -124,6 +124,64 @@ export async function sendPrivateMessage(
     }
 }
 
+// ==================== 合并转发消息 ====================
+
+/** 合并转发消息节点 */
+export interface ForwardNode {
+    type: 'node';
+    data: {
+        nickname: string;
+        user_id?: string;
+        content: Array<{ type: string; data: Record<string, unknown> }>;
+    };
+}
+
+/**
+ * 发送合并转发消息
+ * @param ctx 插件上下文
+ * @param target 群号或用户 ID
+ * @param isGroup 是否为群消息
+ * @param nodes 合并转发节点列表
+ */
+export async function sendForwardMsg(
+    ctx: NapCatPluginContext,
+    target: number | string,
+    isGroup: boolean,
+    nodes: ForwardNode[],
+): Promise<boolean> {
+    try {
+        const actionName = isGroup ? 'send_group_forward_msg' : 'send_private_forward_msg';
+        const params: Record<string, unknown> = { message: nodes };
+        if (isGroup) {
+            params.group_id = String(target);
+        } else {
+            params.user_id = String(target);
+        }
+        await ctx.actions.call(
+            actionName as 'send_group_forward_msg',
+            params as never,
+            ctx.adapterName,
+            ctx.pluginManager.config,
+        );
+        return true;
+    } catch (error) {
+        pluginState.logger.error('发送合并转发消息失败:', error);
+        return false;
+    }
+}
+
+// ==================== 权限检查 ====================
+
+/**
+ * 检查群聊中是否有管理员权限
+ * 私聊消息默认返回 true
+ */
+export function isAdmin(event: OB11Message): boolean {
+    if (event.message_type !== 'group') return true;
+    const role = (event.sender as Record<string, unknown>)?.role;
+    return role === 'admin' || role === 'owner';
+}
+
 // ==================== 消息处理主函数 ====================
 
 /**
@@ -156,7 +214,7 @@ export async function handleMessage(ctx: NapCatPluginContext, event: OB11Message
         switch (subCommand) {
             case 'help': {
                 const helpText = [
-                    `📖 插件帮助`,
+                    `[= 插件帮助 =]`,
                     `${prefix} help - 显示帮助信息`,
                     `${prefix} ping - 测试连通性`,
                     `${prefix} status - 查看运行状态`,
@@ -170,12 +228,12 @@ export async function handleMessage(ctx: NapCatPluginContext, event: OB11Message
                 if (messageType === 'group' && groupId) {
                     const remaining = getCooldownRemaining(groupId, 'ping');
                     if (remaining > 0) {
-                        await sendReply(ctx, event, `⏳ 请等待 ${remaining} 秒后再试`);
+                        await sendReply(ctx, event, `请等待 ${remaining} 秒后再试`);
                         return;
                     }
                 }
 
-                await sendReply(ctx, event, '🏓 pong!');
+                await sendReply(ctx, event, 'pong!');
                 if (messageType === 'group' && groupId) setCooldown(groupId, 'ping');
                 pluginState.incrementProcessed();
                 break;
@@ -183,7 +241,7 @@ export async function handleMessage(ctx: NapCatPluginContext, event: OB11Message
 
             case 'status': {
                 const statusText = [
-                    `📊 插件状态`,
+                    `[= 插件状态 =]`,
                     `运行时长: ${pluginState.getUptimeFormatted()}`,
                     `今日处理: ${pluginState.stats.todayProcessed}`,
                     `总计处理: ${pluginState.stats.processed}`,

@@ -73,7 +73,7 @@ block-beta
 
 | 文件 | 职责 |
 |------|------|
-| `src/core/state.ts` | 全局状态单例 `pluginState`，管理 ctx 引用、配置持久化、统计信息 |
+| `src/core/state.ts` | 全局状态单例 `pluginState`，管理 ctx 引用、配置持久化、数据文件读写、selfId、定时器、统计信息 |
 | `src/types.ts` | TypeScript 类型定义（`PluginConfig`, `GroupConfig`, `ApiResponse`） |
 
 ### 业务服务
@@ -86,7 +86,7 @@ block-beta
 
 | 文件 | 职责 |
 |------|------|
-| `src/handlers/message-handler.ts` | 消息事件入口，命令解析、CD 冷却、消息发送工具 |
+| `src/handlers/message-handler.ts` | 消息事件入口，命令解析、CD 冷却、消息发送工具（含合并转发消息）、权限检查 |
 
 ### 前端 WebUI
 
@@ -293,6 +293,45 @@ pluginState.logger.info('处理消息');
 
 // 通过单例访问上下文
 const ctx = pluginState.ctx;
+
+// 获取机器人自身 QQ 号（init 时自动获取）
+const selfId = pluginState.selfId;
+```
+
+### 数据持久化
+
+除配置文件外，插件通常需要持久化业务数据（订阅列表、定时任务、推送历史等）。使用 `pluginState` 提供的通用数据文件读写方法：
+
+```typescript
+// 读取数据文件（文件不存在时返回默认值）
+const subs = pluginState.loadDataFile<SubscriptionData>('subscriptions.json', { groups: [], users: [] });
+
+// 保存数据文件
+pluginState.saveDataFile('subscriptions.json', subs);
+
+// 获取数据文件完整路径（如需直接操作文件）
+const filePath = pluginState.getDataFilePath('cache.json');
+```
+
+> 数据文件存储在 `ctx.dataPath` 目录下，init 时会自动创建该目录。
+
+### 定时器管理
+
+使用 `pluginState.timers` Map 统一管理定时器，确保 cleanup 时全部清理：
+
+```typescript
+// 添加定时器
+const timer = setInterval(() => { /* ... */ }, 60 * 1000);
+pluginState.timers.set('my_job_id', timer);
+
+// 移除定时器
+const existing = pluginState.timers.get('my_job_id');
+if (existing) {
+    clearInterval(existing);
+    pluginState.timers.delete('my_job_id');
+}
+
+// cleanup 时会自动清理所有 timers，无需手动处理
 ```
 
 ### OneBot Action 调用
@@ -308,8 +347,69 @@ const params: OB11PostSendMsg = {
 };
 await ctx.actions.call('send_msg', params, ctx.adapterName, ctx.pluginManager.config);
 
-// 无参数 Action
-await ctx.actions.call('get_login_info', void 0, ctx.adapterName, ctx.pluginManager.config);
+// 无参数 Action（传 {} 而非 void 0）
+await ctx.actions.call('get_login_info', {}, ctx.adapterName, ctx.pluginManager.config);
+
+// 获取群列表
+const groups = await ctx.actions.call(
+    'get_group_list', {}, ctx.adapterName, ctx.pluginManager.config
+) as Array<{ group_id: number; group_name: string; member_count: number; max_member_count: number }>;
+
+// 获取群成员信息
+const memberInfo = await ctx.actions.call(
+    'get_group_member_info',
+    { group_id: '123456', user_id: '654321' },
+    ctx.adapterName,
+    ctx.pluginManager.config
+) as { nickname: string; card: string; role: string };
+```
+
+### 合并转发消息
+
+发送合并转发消息（多条消息合并为一条卡片）：
+
+```typescript
+import { sendForwardMsg, ForwardNode } from './handlers/message-handler';
+
+// 构造转发节点
+const nodes: ForwardNode[] = [
+    {
+        type: 'node',
+        data: {
+            nickname: '消息来源',
+            user_id: pluginState.selfId || '10000',
+            content: [{ type: 'text', data: { text: '第一条消息' } }],
+        },
+    },
+    {
+        type: 'node',
+        data: {
+            nickname: '消息来源',
+            user_id: pluginState.selfId || '10000',
+            content: [{ type: 'image', data: { file: 'https://example.com/image.png' } }],
+        },
+    },
+];
+
+// 发送到群
+await sendForwardMsg(ctx, groupId, true, nodes);
+
+// 发送到私聊
+await sendForwardMsg(ctx, userId, false, nodes);
+```
+
+### 权限检查
+
+在群聊中检查是否为管理员/群主：
+
+```typescript
+import { isAdmin } from './handlers/message-handler';
+
+// 在消息处理中检查权限
+if (!isAdmin(event)) {
+    await sendReply(ctx, event, '只有管理员才能执行此操作');
+    return;
+}
 ```
 
 ### API 响应格式
@@ -376,10 +476,14 @@ const schema = ctx.NapCatConfig.combine(
 
 - **日志**：统一使用 `ctx.logger` 或 `pluginState.logger`，提供 `log/debug/info/warn/error` 方法
 - **配置持久化**：通过 `pluginState.updateConfig()` / `pluginState.replaceConfig()` 保存
+- **数据持久化**：通过 `pluginState.loadDataFile()` / `pluginState.saveDataFile()` 读写业务数据文件
+- **机器人 QQ 号**：通过 `pluginState.selfId` 获取（init 时自动异步获取）
 - **群配置**：使用 `pluginState.isGroupEnabled(groupId)` 检查
+- **定时器管理**：将定时器存入 `pluginState.timers` Map，cleanup 时会自动全部清理
 - **资源清理**：在 `plugin_cleanup` 中必须清理定时器、关闭连接，否则会导致内存泄漏
 - **数据存储**：使用 `ctx.dataPath` 获取插件专属数据目录
 - **插件间通信**：使用 `ctx.getPluginExports<T>(pluginId)` 获取其他插件的导出
+- **Action 调用**：无参数的 Action 传 `{}` 而非 `void 0`，避免类型问题
 
 ### 图标与表情约定
 

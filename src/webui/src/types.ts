@@ -31,6 +31,8 @@ export interface GroupInfo {
     member_count: number
     max_member_count: number
     enabled: boolean
+    /** 定时推送时间（如 '08:30'），null 表示未设置（模板默认不使用，按需扩展） */
+    scheduleTime?: string | null
 }
 
 export interface ApiResponse<T = unknown> {

@@ -149,7 +149,6 @@ function registerWebUI(ctx: NapCatPluginContext): void {
     router.page({
         path: 'dashboard',
         title: '插件仪表盘',
-        icon: '🔌',
         htmlFile: 'webui/index.html',
         description: '插件管理控制台',
     });

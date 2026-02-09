@@ -75,15 +75,18 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
         try {
             const groups = await ctx.actions.call(
                 'get_group_list',
-                void 0,
+                {},
                 ctx.adapterName,
                 ctx.pluginManager.config
-            ) as Array<{ group_id: number; group_name: string;[key: string]: unknown }>;
+            ) as Array<{ group_id: number; group_name: string; member_count: number; max_member_count: number }>;
 
             const groupsWithConfig = (groups || []).map((group) => {
                 const groupId = String(group.group_id);
                 return {
-                    ...group,
+                    group_id: group.group_id,
+                    group_name: group.group_name,
+                    member_count: group.member_count,
+                    max_member_count: group.max_member_count,
                     enabled: pluginState.isGroupEnabled(groupId),
                 };
             });

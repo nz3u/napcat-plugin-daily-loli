@@ -65,6 +65,12 @@ class PluginState {
     /** 插件启动时间戳 */
     startTime: number = 0;
 
+    /** 机器人自身 QQ 号 */
+    selfId: string = '';
+
+    /** 活跃的定时器 Map: jobId -> NodeJS.Timeout */
+    timers: Map<string, ReturnType<typeof setInterval>> = new Map();
+
     /** 运行时统计 */
     stats = {
         processed: 0,
@@ -92,14 +98,88 @@ class PluginState {
         this._ctx = ctx;
         this.startTime = Date.now();
         this.loadConfig();
+        this.ensureDataDir();
+        this.fetchSelfId();
+    }
+
+    /**
+     * 获取机器人自身 QQ 号（异步，init 时自动调用）
+     */
+    private async fetchSelfId(): Promise<void> {
+        try {
+            const res = await this.ctx.actions.call(
+                'get_login_info', {}, this.ctx.adapterName, this.ctx.pluginManager.config
+            ) as { user_id?: number | string };
+            if (res?.user_id) {
+                this.selfId = String(res.user_id);
+                this.logger.debug("(｡·ω·｡) 机器人 QQ: " + this.selfId);
+            }
+        } catch (e) {
+            this.logger.warn("(；′⌒`) 获取机器人 QQ 号失败:", e);
+        }
     }
 
     /**
      * 清理（在 plugin_cleanup 中调用）
      */
     cleanup(): void {
+        // 清理所有定时器
+        for (const [jobId, timer] of this.timers) {
+            clearInterval(timer);
+            this.logger.debug(`(｡-ω-) 清理定时器: ${jobId}`);
+        }
+        this.timers.clear();
         this.saveConfig();
         this._ctx = null;
+    }
+
+    // ==================== 数据目录 ====================
+
+    /** 确保数据目录存在 */
+    private ensureDataDir(): void {
+        const dataPath = this.ctx.dataPath;
+        if (!fs.existsSync(dataPath)) {
+            fs.mkdirSync(dataPath, { recursive: true });
+        }
+    }
+
+    /** 获取数据文件完整路径 */
+    getDataFilePath(filename: string): string {
+        return path.join(this.ctx.dataPath, filename);
+    }
+
+    // ==================== 通用数据文件读写 ====================
+
+    /**
+     * 读取 JSON 数据文件
+     * 常用于订阅数据、定时任务配置、推送历史等持久化数据
+     * @param filename 数据文件名（如 'subscriptions.json'）
+     * @param defaultValue 文件不存在或解析失败时的默认值
+     */
+    loadDataFile<T>(filename: string, defaultValue: T): T {
+        const filePath = this.getDataFilePath(filename);
+        try {
+            if (fs.existsSync(filePath)) {
+                return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+            }
+        } catch (e) {
+            this.logger.warn("(；′⌒`) 读取数据文件 " + filename + " 失败:", e);
+        }
+        return defaultValue;
+    }
+
+    /**
+     * 保存 JSON 数据文件
+     * @param filename 数据文件名
+     * @param data 要保存的数据
+     */
+    saveDataFile<T>(filename: string, data: T): void {
+        const filePath = this.getDataFilePath(filename);
+        try {
+            fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
+        } catch (e) {
+            this.logger.error("(╥﹏╥) 保存数据文件 " + filename + " 失败:", e);
+        }
     }
 
     // ==================== 配置管理 ====================
@@ -194,7 +274,6 @@ class PluginState {
         }
         this.stats.todayProcessed++;
         this.stats.processed++;
-        this.saveConfig();
     }
 
     // ==================== 工具方法 ====================
