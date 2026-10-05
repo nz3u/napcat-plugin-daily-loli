@@ -224,7 +224,16 @@ jobs:
           COMMITS=$(cat commits.txt)
 
           if [ -f ".github/prompt/default.md" ]; then
-            sed "s/{VERSION}/$CURRENT_TAG/g" .github/prompt/default.md > CHANGELOG.md
+            # 提交为空时给出占位，避免留下空的段落
+            [ -n "$COMMITS" ] || COMMITS="_无新增提交记录_"
+            # bash 的 ${var//pat/repl} 会把 repl 中的 & 展开为"匹配到的内容"，
+            # 提交信息里若含 & 就会被破坏，因此先转义 & 和 \。
+            SAFE_COMMITS="${COMMITS//\\/\\\\}"
+            SAFE_COMMITS="${SAFE_COMMITS//&/\\&}"
+            TEMPLATE=$(cat .github/prompt/default.md)
+            TEMPLATE="${TEMPLATE//\{VERSION\}/$CURRENT_TAG}"
+            TEMPLATE="${TEMPLATE//\{COMMITS\}/$SAFE_COMMITS}"
+            printf '%s\n' "$TEMPLATE" > CHANGELOG.md
           else
             echo "## $CURRENT_TAG" > CHANGELOG.md
             echo "" >> CHANGELOG.md
