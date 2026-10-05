@@ -1,51 +1,38 @@
-/**
- * 类型定义文件
- * 定义插件内部使用的接口和类型
- *
- * 注意：OneBot 相关类型（OB11Message, OB11PostSendMsg 等）
- * 以及插件框架类型（NapCatPluginContext, PluginModule 等）
- * 均来自 napcat-types 包，无需在此重复定义。
- */
-
-// ==================== 插件配置 ====================
-
-/**
- * 插件主配置接口
- * 在此定义你的插件所需的所有配置项
- */
 export interface PluginConfig {
-    /** 全局开关：是否启用插件功能 */
     enabled: boolean;
-    /** 调试模式：启用后输出详细日志 */
-    debug: boolean;
-    /** 触发命令前缀，默认为 #cmd */
-    commandPrefix: string;
-    /** 同一命令请求冷却时间（秒），0 表示不限制 */
+    scheduledEnabled: boolean;
+    keywordEnabled: boolean;
+    /** 逗号、空格或换行分隔；空列表不发送。 */
+    scheduledGroups: string;
+    keywordGroups: string;
+    /** 简略版：只发送日期、评级和角色（xxx（#id）），省略画师/来源/备注/推荐。 */
+    compactMode: boolean;
     cooldownSeconds: number;
-    /** 按群的单独配置 */
-    groupConfigs: Record<string, GroupConfig>;
-    // TODO: 在这里添加你的插件配置项
+    requestTimeoutSeconds: number;
 }
 
-/**
- * 群配置
- */
-export interface GroupConfig {
-    /** 是否启用此群的功能 */
-    enabled?: boolean;
-    // TODO: 在这里添加群级别的配置项
+export interface DailyCard {
+    tags: 'LC0';
+    imgUrl: string;
+    artistName: string;
+    artistUrl: string;
+    sourceUrl: string;
+    characterNames: string[];
+    characterIds: string[];
+    comment: string;
+    suggestedBy?: { username: string; nickname: string };
 }
 
-// ==================== API 响应 ====================
+export interface DailyData {
+    date: string;
+    cards: DailyCard[];
+}
 
-/**
- * 统一 API 响应格式
- */
-export interface ApiResponse<T = unknown> {
-    /** 状态码，0 表示成功，-1 表示失败 */
-    code: number;
-    /** 错误信息（仅错误时返回） */
-    message?: string;
-    /** 响应数据（仅成功时返回） */
-    data?: T;
+export type MessageSegment =
+    | { type: 'text'; data: { text: string } }
+    | { type: 'image'; data: { file: string } };
+
+export interface DeliveryHistory {
+    date: string;
+    groups: string[];
 }

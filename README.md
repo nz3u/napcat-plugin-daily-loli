@@ -1,416 +1,140 @@
-# NapCat 插件开发模板
+# NapCat 每日 LC0 图片插件
 
-一个快速开始 NapCat 插件开发的模板项目，基于实际生产项目架构提炼而成。
+基于 [NapNeko/napcat-plugin-template](https://github.com/NapNeko/napcat-plugin-template) 开发。只获取并发送 **LC0（非色情）** 卡片，不提供其它评级选项。
 
-## 📁 项目结构
+## 功能
+
+- 每日 **北京时间（UTC+8）07:21** 获取最新图片和信息，推送至配置的 QQ 群。
+- 群内发送纯文本 **今日图片** 即可获取当期图片，去掉首尾空白后精确匹配；不响应私聊、引用、@、图片等混合消息。
+- 定时推送和关键词触发各有独立开关、独立群白名单，另有插件总开关。
+- 消息包含图片、日期、画师、角色、作品来源、备注、推荐者（接口有提供才展示），支持**简略版**。
+- 主/备接口自动切换、请求超时、5 分钟缓存、并发合并、按群冷却。
+- 定时失败每分钟重试；按群记录成功日期，已成功的群不会因其它群失败而重发。重启后补发当天尚未发送的群。
+
+## 安装
+
+需要 NapCat **4.14.0+**，建议最新稳定版及 Node.js 20+。
+
+1. 解压 `napcat-plugin-daily-loli.zip`，将目录放到 NapCat 的 `plugins/napcat-plugin-daily-loli/`。
+2. 确认这个目录下直接包含 `package.json` 和 `index.mjs`（不要多套一层目录）。
+3. 在 NapCat WebUI 插件管理中加载/启用 **每日 LC0 图片**。
+4. 打开该插件的**配置面板**，填写定时推送群号、关键词触发群号，然后保存。
+
+也可直接将开发构建的 `dist/` 内容复制到上述插件目录。构建产物没有第三方运行时依赖，不需要在 NapCat 插件目录安装依赖。
+
+> 使用 NapCat 原生配置面板，未启用模板的独立 React 仪表盘；不开放无鉴权配置 API。
+> 两个群号列表默认都是空：首次安装不会向任何群自动发送。只能向机器人已加入、具有发言权限的群发送。
+
+## 配置
+
+| 配置项 | 默认 | 含义 |
+| --- | --- | --- |
+| `enabled` | `true` | 总开关 |
+| `scheduledEnabled` | `true` | 每日定时推送开关 |
+| `scheduledGroups` | `""` | 定时推送群号，逗号/空格/换行分隔；空表示不发送 |
+| `keywordEnabled` | `true` | “今日图片”触发开关 |
+| `keywordGroups` | `""` | 允许关键词触发的群号；空表示不响应 |
+| `compactMode` | `false` | 简略版：只发送日期、评级和角色 |
+| `cooldownSeconds` | `60` | 单群关键词冷却，0–3600 秒；0 表示不限制 |
+| `requestTimeoutSeconds` | `15` | 每个接口请求超时，3–60 秒 |
+
+关键词冷却说明：
+
+- 冷却按群独立计算，从**收到触发消息时**开始计时，覆盖图片获取和发送的整个过程，因此接口慢时也不会连发。
+- 冷却期间同一群再次发送“今日图片”会被静默忽略，不回复、不排队。
+- 即使把冷却设为 `0`，获取或发送失败后仍保留 10 秒兜底冷却，避免上游故障时刷屏；成功时则不受影响。
+- 同一群同时到达的多条触发消息只处理一条。
+
+### 消息格式
+
+两种版本都**不再输出画师主页**和单独的角色链接行；角色统一写成 `名字（#BangumiID）`，例如 `橘ノゾミ（#155144）`；角色缺少 ID 时只写名字。
+
+**详细版**（`compactMode: false`，默认）：
 
 ```
-napcat-plugin-template/
-├── src/
-│   ├── index.ts              # 插件入口，导出生命周期函数
-│   ├── config.ts             # 配置定义和 WebUI Schema
-│   ├── types.ts              # TypeScript 类型定义
-│   ├── core/
-│   │   └── state.ts          # 全局状态管理单例
-│   ├── handlers/
-│   │   └── message-handler.ts # 消息处理器（命令解析、CD 冷却、消息工具）
-│   ├── services/
-│   │   └── api-service.ts    # WebUI API 路由（无认证模式）
-│   └── webui/                # React SPA 前端（独立构建）
-│       ├── index.html
-│       ├── package.json
-│       ├── vite.config.ts
-│       ├── tailwind.config.js
-│       ├── tsconfig.json
-│       └── src/
-│           ├── App.tsx           # 应用根组件，页面路由
-│           ├── main.tsx          # React 入口
-│           ├── index.css         # TailwindCSS + 自定义样式
-│           ├── types.ts          # 前端类型定义
-│           ├── vite-env.d.ts     # Vite 环境声明
-│           ├── utils/
-│           │   └── api.ts        # API 请求封装（noAuthFetch / authFetch）
-│           ├── hooks/
-│           │   ├── useStatus.ts  # 状态轮询 Hook
-│           │   ├── useTheme.ts   # 主题切换 Hook
-│           │   └── useToast.ts   # Toast 通知 Hook
-│           ├── components/
-│           │   ├── Sidebar.tsx       # 侧边栏导航
-│           │   ├── Header.tsx        # 页面头部
-│           │   ├── ToastContainer.tsx # Toast 通知容器
-│           │   └── icons.tsx         # SVG 图标组件
-│           └── pages/
-│               ├── StatusPage.tsx  # 仪表盘页面
-│               ├── ConfigPage.tsx  # 配置管理页面
-│               └── GroupsPage.tsx  # 群管理页面
-├── .github/
-│   ├── workflows/
-│   │   └── release.yml        # CI/CD 自动构建发布
-│   ├── prompt/
-│   │   ├── default.md             # 默认 Release Note 模板（回退用）
-│   │   └── ai-release-note.md     # （可选）AI Release Note 自定义 Prompt
-│   └── copilot-instructions.md  # Copilot 上下文说明
-├── package.json
-├── tsconfig.json
-├── vite.config.ts             # Vite 构建配置（含资源复制插件）
-└── README.md
+今日图片 · 2026-10-05 · LC0
+画师：MOOTION2
+角色：橘ノゾミ（#155144）
+作品来源：https://x.com/MOOTION_moon/status/2092529421446254669
+备注：大狗，大狗......
+推荐：Stardream
+[图片]
 ```
 
-## 🚀 快速开始
+**简略版**（`compactMode: true`）：
 
-### 1. 安装依赖
-
-```bash
-pnpm install
+```
+今日图片 · 2026-10-05 · LC0
+角色：橘ノゾミ（#155144）
+[图片]
 ```
 
-### 2. 修改插件信息
+简略版省略画师、作品来源、备注和推荐者，只保留日期、评级和角色。
 
-编辑 `package.json`，修改以下字段：
+例如（群号需替换成实际群号）：
 
 ```json
 {
-    "name": "napcat-plugin-your-name",
-    "description": "你的插件描述",
-    "author": "你的名字"
+  "enabled": true,
+  "scheduledEnabled": true,
+  "keywordEnabled": true,
+  "scheduledGroups": "123456789,987654321",
+  "keywordGroups": "123456789,987654321",
+  "compactMode": false,
+  "cooldownSeconds": 60,
+  "requestTimeoutSeconds": 15
 }
 ```
 
-### 3. 开发你的功能
+点击保存后配置变更即时生效（编辑但未保存不应用）。开关关闭后不再开始新推送；已经提交给 QQ 的消息无法撤回。关键词触发不影响定时推送历史。`compactMode` 对定时推送和关键词触发同时生效。
 
-- **添加配置项**: 编辑 `src/types.ts` 和 `src/config.ts`
-- **消息处理**: 编辑 `src/handlers/message-handler.ts`
-- **API 路由**: 编辑 `src/services/api-service.ts`
-- **状态管理**: 编辑 `src/core/state.ts`
-- **WebUI 页面**: 编辑 `src/webui/src/pages/` 下的页面组件
-- **WebUI 类型**: 同步更新 `src/webui/src/types.ts` 中的前端类型
+### 时间、补发和更新延迟
 
-### 4. 构建 & 开发
+- 与提供的用户脚本一致，**北京时间 07:21 前使用前一天的内容日**，不是服务器本地时区，也不是零点切换。
+- 在线时每 20 秒检查一次，通常在 07:21:00–07:21:20 开始请求；网络/QQ 发送会增加延迟，不保证秒级准点。
+- 07:21 后加载插件、开启定时开关或新增群号，会立即尝试补发当天尚未发送的群。07:21 前不自动补发昨日。
+- 接口未更新到预期日期、没有 LC0 卡片或发送失败时，定时任务每分钟重试至当天结束；不以昨日数据或其它评级代替。
+- 成功历史保存在 NapCat 分配的插件数据目录 `delivery-history.json` 中。同一日期同一群已成功发送后，关开开关不会重复推送。
+- 每个群的全部卡片作为一条消息提交；QQ 接口异常时可能存在“服务端已接收但客户端超时”的不确定性。与所有消息系统一样，无法绝对保证网络故障下的 exactly-once。
 
-```bash
-# 完整构建（自动构建 WebUI 前端 + 后端 + 资源复制，一步完成）
-pnpm run build
+## 接口来源
 
-# 仅构建 WebUI 前端（不构建后端）
-pnpm run build:webui
+Bangumi 应用页 <https://bgm.tv/dev/app/3488> 是 OAuth 应用信息页，不是图片 API。根据用户提供的用户脚本提取实际公共接口：
 
-# WebUI 前端开发服务器（实时预览，推荐纯前端开发时使用）
-pnpm run dev:webui
+- 主：<https://loliconey.tsuki.ga/api/v1/daily?badge=LC0>
+- 备：<https://lc-coney.deno.dev/api/v1/daily?badge=LC0>（开发时实测返回 404，原 Deno 部署已下线；保留脚本中的备用尝试，目前主要依赖主接口）
 
-# 类型检查
+该 GET 接口无需登录和 App Secret。响应是 `{ "date": "YYYY-MM-DD", "cards": [...] }`；插件同时校验日期、图片 HTTPS 地址及已知来源域名（`loli.akkariin.moe` / `p.sda1.dev`）和 `tags === "LC0"`。标签缺失、未知或非 LC0 的卡片一律跳过。评级依赖上游标注，插件不是视觉内容审核工具；如发现错误标注，请关闭推送并向来源反馈。请遵守来源使用规则和作者版权，不移除画师/作品出处。
+
+## 开发与验证
+
+```sh
+pnpm install
 pnpm run typecheck
+pnpm test
+pnpm run build
+pnpm run test:package
 ```
 
-### 5. 调试 & 热重载
+测试覆盖北京时间边界、LC0 白名单、信息格式（详细版/简略版/角色 ID 缺失）、接口回退/缓存/并发、配置清洗、关键词开关/冷却、定时重试及重启去重、卸载后不再发送，以及以下回归场景：全新安装未填群号时不回复任何群、重载后旧实例不再重复响应、冷却在各群间独立计时、故障兜底冷却、简略版开关对实际发送内容生效等。测试模拟 NapCat 和 HTTP 请求，不向真实 QQ 群发消息。真实群发送效果需要安装后在测试群验证。
 
-项目通过 Vite 插件 `napcatHmrPlugin` 集成了热重载能力（已在 `vite.config.ts` 中配置），需要在 NapCat 端安装 `napcat-plugin-debug` 插件并启用。
+### 已修复的问题
 
-```bash
-# 一键部署：构建 → 自动复制到远程插件目录 → 自动重载
-pnpm run deploy
+- **全新安装时未填关键词群号也会回复**：白名单现在 fail-closed（空列表等于“未配置”，任何群都不响应）；`plugin_get_config` 在运行时未就绪时从磁盘读取用户保存的配置，不再回退成默认值，避免面板与插件对配置的理解不一致。
+- **一次触发发送两遍**：同一进程内只保留一个生效运行时（`DailyRuntime.takeOver`），重载或重复初始化时旧实例被停用且不再处理事件；同时按消息 id 去重，拦截框架重复投递的同一事件。
+- **冷却计时不准确**：冷却改为按群记录起点、按群独立计时，并在请求发起前生效；故障兜底冷却（10 秒）在 `cooldownSeconds=0` 时同样有效。
 
-# 开发模式：watch 构建 + 每次构建后自动部署 + 热重载（单进程）
-pnpm run dev
-```
+模板自带 `napcat-types` 0.0.16 与 0.0.17 的内部声明存在语法错误，故以 `src/napcat.ts` 描述本插件所需的公共结构类型，不导入 NapCat 内部实现；安装包无 SDK 运行时依赖。若未来上游图片来源新增域名，需要更新 `src/services/daily-service.ts` 的图片域名白名单。白名单仅约束初始 URL，图片下载及重定向由 NapCat 处理，因此仍需信任上游图床。
 
-> `deploy` = `vite build`（构建完成时 Vite 插件自动部署+重载）  
-> `dev` = `vite build --watch`（每次重新构建后 Vite 插件自动部署+重载）
+主要代码：`src/index.ts`（生命周期）、`src/config.ts`（原生配置面板）、`src/services/daily-service.ts`（接口与消息）、`src/services/api-service.ts`（调度运行时）、`src/core/state.ts`（配置和成功历史）、`src/handlers/message-handler.ts`（关键词和 OneBot 发送）。
 
-> **注意**：`pnpm run dev` 仅监听**插件后端**（`src/` 下非 webui 的文件）的变化。修改 WebUI 前端代码后，随便改动一下后端文件即可触发重新构建（每次后端构建时会自动构建并部署 WebUI）。
->
-> 如果只开发 WebUI 前端，推荐使用 `pnpm run dev:webui` 启动前端开发服务器，可实时预览。
+## 故障排查
 
-`vite.config.ts` 中的 `copyAssetsPlugin` 会在每次构建时自动构建 WebUI 前端并复制产物，`napcatHmrPlugin()` 会自动连接调试服务 → 复制 dist/ 到远程 → 调用 reloadPlugin。
+- 不发送：检查总开关、对应功能开关、对应群号白名单、机器人是否入群及是否被禁言。
+- 图片加载失败：图片由 NapCat 按 URL 下载；确保 NapCat 所在机器能访问返回的图片域名。重试或查看 NapCat 日志中的发送错误。
+- 接口请求失败：确认 NapCat 所在机器能访问两个 HTTPS 接口，必要时配置该机器的网络环境；插件不会读取你的浏览器 Cookie。
+- 07:21 暂时没图：上游可能有更新延迟，查看日志并等待一分钟自动重试。
 
-如需自定义调试服务地址或 token：
+## 许可
 
-```typescript
-// vite.config.ts
-napcatHmrPlugin({
-  wsUrl: 'ws://192.168.1.100:8998',
-  token: 'mySecret',
-})
-```
-
-**CLI 交互模式（可选）：**
-
-```bash
-# 独立运行 CLI，进入交互模式（REPL）
-npx napcat-debug
-
-# 交互命令
-debug> list              # 列出所有插件
-debug> deploy            # 部署当前目录插件
-debug> reload <id>       # 重载指定插件
-debug> status            # 查看服务状态
-```
-
-构建产物在 `dist/` 目录下：
-
-```
-dist/
-├── index.mjs           # 插件主入口（Vite 打包）
-├── package.json        # 清理后的 package.json
-└── webui/              # React SPA 构建产物
-    └── index.html      # 单文件 SPA（vite-plugin-singlefile）
-```
-
-## 📖 架构说明
-
-### 分层架构
-
-```mermaid
-graph TD
-    Entry["index.ts (入口)<br/>生命周期钩子 + WebUI 路由/静态资源注册 + 事件分发"]
-    Entry --> Handlers["Handlers<br/>消息处理入口"]
-    Entry --> Services["Services<br/>业务逻辑"]
-    Entry --> WebUI["WebUI<br/>前端界面"]
-    Handlers --> State["core/state<br/>全局状态单例"]
-    Services --> State
-```
-
-### 核心设计模式
-
-| 模式 | 实现位置 | 说明 |
-|------|----------|------|
-| 单例状态 | `src/core/state.ts` | `pluginState` 全局单例，持有 ctx、config、logger |
-| 服务分层 | `src/services/*.ts` | 按职责拆分业务逻辑 |
-| 配置校验 | `sanitizeConfig()` | 类型安全的运行时配置验证 |
-| CD 冷却 | `cooldownMap` | `Map<groupId:command, expireTimestamp>` |
-
-## 🔧 生命周期函数
-
-| 导出 | 说明 |
-|------|------|
-| `plugin_init` | 插件初始化，加载配置、注册路由 |
-| `plugin_onmessage` | 消息事件处理 |
-| `plugin_cleanup` | 插件卸载，清理资源 |
-| `plugin_config_ui` | WebUI 配置 Schema |
-| `plugin_get_config` | 获取配置 |
-| `plugin_set_config` | 设置配置 |
-| `plugin_on_config_change` | 配置变更回调 |
-
-## 🌐 WebUI API 路由
-
-模板使用 **无认证路由**（`router.getNoAuth` / `router.postNoAuth`），适用于插件自带的 WebUI 页面调用。
-
-> NapCat 路由器提供两种注册方式：
-> - `router.get` / `router.post`：需要 NapCat WebUI 登录认证
-> - `router.getNoAuth` / `router.postNoAuth`：无需认证，插件 WebUI 页面可直接调用
-
-### 内置 API 接口
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/info` | 获取插件信息 |
-| GET | `/status` | 获取运行状态、配置、统计 |
-| GET | `/config` | 获取当前配置 |
-| POST | `/config` | 保存配置（合并更新） |
-| GET | `/groups` | 获取群列表（含启用状态） |
-| POST | `/groups/:id/config` | 更新单个群配置 |
-| POST | `/groups/bulk-config` | 批量更新群配置 |
-
-### 前端调用方式
-
-```javascript
-// 无认证 API 请求
-const url = `/api/plugin/${PLUGIN_NAME}${path}`;
-const res = await fetch(url, {
-    headers: { 'Content-Type': 'application/json' },
-    ...options
-});
-```
-
-## 📝 编码约定
-
-### ESM 模块规范
-
-- `package.json` 中 `type: "module"`
-- 构建目标 `ESNext`，输出 `.mjs`
-
-### 状态访问模式
-
-```typescript
-import { pluginState } from '../core/state';
-
-// 读取配置
-const config = pluginState.config;
-
-// 记录日志（三级别）
-pluginState.log('info', '消息内容');
-pluginState.log('warn', '警告内容');
-pluginState.log('error', '错误内容', error);
-pluginState.logDebug('调试信息'); // 仅 debug 模式输出
-
-// 配置操作
-pluginState.setConfig(ctx, { key: value });       // 合并更新
-pluginState.replaceConfig(ctx, fullConfig);        // 完整替换
-pluginState.updateGroupConfig(ctx, groupId, cfg);  // 更新群配置
-pluginState.isGroupEnabled(groupId);               // 检查群启用状态
-
-// 调用 OneBot API
-await pluginState.callApi('send_group_msg', { group_id, message });
-
-// 统计
-pluginState.incrementProcessedCount();
-```
-
-### 消息发送模式
-
-```typescript
-import {
-    sendGroupMessage, sendPrivateMessage, sendGroupForwardMsg,
-    setMsgEmojiLike, uploadGroupFile,
-    textSegment, imageSegment, atSegment, replySegment, buildForwardNode
-} from '../handlers/message-handler';
-
-// 发送群消息（带回复）
-await sendGroupMessage(ctx, groupId, [
-    replySegment(messageId),
-    textSegment('消息内容')
-]);
-
-// 合并转发消息
-const nodes = [
-    buildForwardNode('10001', 'Bot', [textSegment('第一条')]),
-    buildForwardNode('10001', 'Bot', [textSegment('第二条')]),
-];
-await sendGroupForwardMsg(ctx, groupId, nodes);
-
-// 表情回复
-await setMsgEmojiLike(ctx, messageId, '76');
-
-// 上传群文件
-await uploadGroupFile(ctx, groupId, '/path/to/file.zip', 'file.zip');
-```
-
-### API 响应格式
-
-```typescript
-// 成功响应
-res.json({ code: 0, data: { ... } });
-
-// 错误响应
-res.status(500).json({ code: -1, message: '错误描述' });
-```
-
-## 🤖 AI 辅助开发
-
-项目内置了 NapCat API 的 Apifox MCP Server 配置（`.vscode/mcp.json`），在 VS Code 中配合 AI 助手（如 GitHub Copilot）使用时，可以直接查询 NapCat 的完整 API 文档。
-
-### 使用方式
-
-1. 使用 VS Code 打开本项目
-2. 确保已安装 [GitHub Copilot](https://marketplace.visualstudio.com/items?itemName=GitHub.copilot) 扩展
-3. 打开 Copilot Chat，MCP Server 会自动启动
-4. 在对话中即可让 AI 查询 NapCat API 接口信息，例如：
-   - *"NapCat 有哪些发送消息的 API？"*
-   - *"获取群列表的接口参数是什么？"*
-   - *"帮我调用 send_group_msg 发送一条群消息"*
-
-> MCP 配置位于 `.vscode/mcp.json`，使用 `apifox-mcp-server` 连接 NapCat 的 API 文档站点，无需额外配置。
-
-## 🚀 CI/CD 自动发布
-
-项目内置了两个 GitHub Actions 工作流：
-
-### 1. 自动构建发布（`release.yml`）
-
-推送 `v*` 格式的 tag 即可自动构建并创建 GitHub Release。
-
-```bash
-git tag v1.0.0
-git push origin v1.0.0
-```
-
-也可在 GitHub Actions 页面手动触发，可选填版本号。
-
-**基础自定义：**
-- 修改 `release.yml` 中的 `PLUGIN_NAME` 为你的插件名称
-- 默认 Release Note 模板位于 `.github/prompt/default.md`
-
-#### 🤖 AI 生成 Release Note（可选）
-
-支持接入任意兼容 OpenAI 格式的 AI API，自动根据 git commit 记录生成结构化的 Release Note。
-
-**配置方式：** 在插件仓库 **Settings > Secrets and variables > Actions** 中添加以下 Secrets：
-
-| Secret | 必填 | 说明 |
-|--------|------|------|
-| `AI_API_URL` | ✅ | 兼容 OpenAI 格式的 API 地址（如 `https://api.openai.com/v1/chat/completions`） |
-| `AI_API_KEY` | ✅ | 对应的 API 密钥 |
-| `AI_MODEL` | ❌ | 模型名称，默认 `gpt-4o-mini` |
-
-**工作逻辑：**
-- ✅ 配置了 `AI_API_URL` + `AI_API_KEY` → 自动调用 AI 生成 Release Note
-- ❌ 未配置或 AI 调用失败 → 自动回退到默认模板（`.github/prompt/default.md`）或 commit log
-- AI 调用失败不会阻断发布流程，始终保证 Release 正常创建
-
-**自定义 AI Prompt：** 创建 `.github/prompt/ai-release-note.md` 文件即可覆盖默认的 system prompt，支持 `{VERSION}` 占位符。
-
-> 💡 不配置任何 AI 相关的 Secret，发布流程与之前完全一致，无任何影响。
-
-### 2. 自动更新插件索引（`update-index.yml`）
-
-Release 发布后，会自动向 [napcat-plugin-index](https://github.com/NapNeko/napcat-plugin-index) 提交 PR 更新插件索引，**无需手动编辑 `plugins.v4.json`**。
-
-**完整流程：**
-
-```
-push tag → release.yml 构建发布 → update-index.yml 自动提交 PR → 索引仓库 CI 自动审核 → 维护者合并
-```
-
-**配置步骤：**
-
-1. **填写 `package.json` 中的插件元信息**（CI 会自动读取）：
-   ```json
-   {
-     "name": "napcat-plugin-your-name",
-     "plugin": "你的插件显示名",
-     "version": "1.0.0",
-     "description": "插件描述",
-     "author": "你的名字",
-     "napcat": {
-       "tags": ["工具"],
-       "minVersion": "4.14.0",
-       "homepage": "https://github.com/username/napcat-plugin-your-name"
-     }
-   }
-   ```
-
-   `napcat` 字段说明：
-
-   | 字段 | 说明 | 默认值 |
-   |------|------|--------|
-   | `tags` | 插件标签数组，用于分类 | `["工具"]` |
-   | `minVersion` | 支持的最低 NapCat 版本 | `"4.14.0"` |
-   | `homepage` | 插件主页 URL | 仓库地址 |
-
-2. **配置仓库 Secret**：在插件仓库 Settings > Secrets and variables > Actions 中添加：
-   - `INDEX_PAT`：一个有 `public_repo` 权限的 GitHub Personal Access Token，用于向索引仓库提交 PR
-
-3. **修改 `update-index.yml`**（可选）：如果索引仓库不是 `NapNeko/napcat-plugin-index`，修改 `INDEX_REPO` 环境变量
-
-> 💡 配置完成后，每次发布新版本只需 `git tag v1.x.x && git push origin v1.x.x`，一切自动完成！
-
-## 📦 部署
-
-### 方式一：一键部署（推荐开发时使用）
-
-确保 NapCat 端已安装并启用 `napcat-plugin-debug` 插件，然后：
-
-```bash
-pnpm run deploy
-```
-
-这会自动构建，`napcatHmrPlugin` 在构建完成后自动复制 `dist/` 到远程插件目录并触发热重载。
-
-### 方式二：手动部署
-
-将 `dist/` 目录的内容复制到 NapCat 的插件目录即可。
-
-> 💡 使用 CI/CD 自动发布后，可直接从 GitHub Release 下载 zip 包解压到 `plugins` 目录。
-
-## 📄 许可证
-
-MIT License
+沿用模板 MIT 许可；图片及作者信息的权利归相应作者/来源所有。
