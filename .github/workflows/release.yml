@@ -13,7 +13,6 @@ on:
 
 permissions:
   contents: write
-  actions: write
 
 jobs:
   build:
@@ -56,15 +55,15 @@ jobs:
         run: |
           npm version ${{ steps.version.outputs.clean_version }} --no-git-tag-version --allow-same-version
 
-      - name: Install WebUI dependencies
-        run: cd src/webui && pnpm install
+      - name: Typecheck and test
+        run: pnpm run typecheck && pnpm test
 
       - name: Build project
-        run: pnpm run build
+        run: pnpm run build && pnpm run test:package
 
       - name: Prepare release package
         env:
-          PLUGIN_NAME: napcat-plugin-template
+          PLUGIN_NAME: napcat-plugin-daily-loli
         run: |
           # 创建临时目录用于组织文件
           mkdir -p release
@@ -72,15 +71,15 @@ jobs:
           # 复制需要的文件到临时目录
           cp dist/index.mjs release/
           cp dist/package.json release/
-          cp -r dist/webui release/
+          cp dist/README.md dist/LICENSE release/
 
           # 进入临时目录并压缩
           cd release
-          zip -r ../${PLUGIN_NAME}.zip index.mjs package.json webui
+          zip -r ../${PLUGIN_NAME}.zip index.mjs package.json README.md LICENSE
 
       - name: Verify zip contents
         run: |
-          PLUGIN_NAME="napcat-plugin-template"
+          PLUGIN_NAME="napcat-plugin-daily-loli"
           unzip -l ${PLUGIN_NAME}.zip
 
       - name: Collect git log
@@ -242,26 +241,6 @@ jobs:
           body_path: CHANGELOG.md
           draft: false
           files: |
-            napcat-plugin-template.zip
+            napcat-plugin-daily-loli.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # 触发索引更新工作流
-      # 注意：默认 GITHUB_TOKEN 创建的 Release 不会触发 on.release 事件
-      # 因此需要手动通过 workflow_dispatch 触发 update-index.yml
-      - name: Trigger index update
-        if: success()
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            await github.rest.actions.createWorkflowDispatch({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              workflow_id: 'update-index.yml',
-              ref: 'main',
-              inputs: {
-                version: '${{ steps.version.outputs.version }}'
-              }
-            })
-            console.log('✅ 已触发 update-index.yml 工作流')

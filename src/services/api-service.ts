@@ -1,145 +1,201 @@
-/**
- * API 服务模块
- * 注册 WebUI API 路由
- *
- * 路由类型说明：
- * ┌─────────────────┬──────────────────────────────────────────────┬─────────────────┐
- * │ 类型            │ 路径前缀                                      │ 注册方法        │
- * ├─────────────────┼──────────────────────────────────────────────┼─────────────────┤
- * │ 需要鉴权 API    │ /api/Plugin/ext/<plugin-id>/                 │ router.get/post │
- * │ 无需鉴权 API    │ /plugin/<plugin-id>/api/                     │ router.getNoAuth│
- * │ 静态文件        │ /plugin/<plugin-id>/files/<urlPath>/         │ router.static   │
- * │ 内存文件        │ /plugin/<plugin-id>/mem/<urlPath>/           │ router.staticOnMem│
- * │ 页面            │ /plugin/<plugin-id>/page/<path>             │ router.page     │
- * └─────────────────┴──────────────────────────────────────────────┴─────────────────┘
- *
- * 一般插件自带的 WebUI 页面使用 NoAuth 路由，因为页面本身已在 NapCat WebUI 内嵌展示。
- */
-
-import type {
-    NapCatPluginContext,
-    PluginHttpRequest,
-    PluginHttpResponse
-} from 'napcat-types/napcat-onebot/network/plugin/types';
-import { pluginState } from '../core/state';
+import type { NapCatPluginContext } from '../napcat';
+import type { OB11Message } from '../napcat';
+import { parseGroupIds } from '../config';
+import { PluginState } from '../core/state';
+import { DailyClient, contentDate, isAfterRelease, buildDailyMessage } from './daily-service';
+import { isTodayImageCommand, sendGroupMessage } from '../handlers/message-handler';
+import type { DailyData } from '../types';
 
 /**
- * 注册 API 路由
+ * 每 20 秒检查北京时间，逐群记录成功状态；重试不会重发已经成功的群。
+ *
+ * 同一进程只允许一个生效实例：NapCat 重载或重复初始化时，
+ * 旧实例会被停用，避免一条消息被多个实例重复响应。
  */
-export function registerApiRoutes(ctx: NapCatPluginContext): void {
-    const router = ctx.router;
+export class DailyRuntime {
+    readonly state: PluginState;
+    private readonly abortController = new AbortController();
+    private readonly client: DailyClient;
+    private timer?: ReturnType<typeof setInterval>;
+    private active = true;
+    private scheduledTask?: Promise<void>;
+    private nextAttempt = 0;
+    private readonly keywordTasks = new Map<string, Promise<void>>();
+    /** 记录每个群冷却起点及故障兜底时长，避免时钟问题导致冷却失效。 */
+    private readonly lastTriggerAt = new Map<string, { startedAt: number; minimumMs: number }>();
+    /** 已经处理过的消息 id，兜底拦截 NapCat 重复投递的同一事件。 */
+    private readonly handledMessages = new Set<string>();
+    private static current?: DailyRuntime;
 
-    // ==================== 插件信息（无鉴权）====================
-
-    /** 获取插件状态 */
-    router.getNoAuth('/status', (_req, res) => {
-        res.json({
-            code: 0,
-            data: {
-                pluginName: ctx.pluginName,
-                uptime: pluginState.getUptime(),
-                uptimeFormatted: pluginState.getUptimeFormatted(),
-                config: pluginState.config,
-                stats: pluginState.stats,
-            },
-        });
-    });
-
-    // ==================== 配置管理（无鉴权）====================
-
-    /** 获取配置 */
-    router.getNoAuth('/config', (_req, res) => {
-        res.json({ code: 0, data: pluginState.config });
-    });
-
-    /** 保存配置 */
-    router.postNoAuth('/config', async (req, res) => {
-        try {
-            const body = req.body as Record<string, unknown> | undefined;
-            if (!body) {
-                return res.status(400).json({ code: -1, message: '请求体为空' });
-            }
-            pluginState.updateConfig(body as Partial<import('../types').PluginConfig>);
-            ctx.logger.info('配置已保存');
-            res.json({ code: 0, message: 'ok' });
-        } catch (err) {
-            ctx.logger.error('保存配置失败:', err);
-            res.status(500).json({ code: -1, message: String(err) });
+    constructor(
+        readonly ctx: NapCatPluginContext,
+        fetcher: typeof fetch = fetch,
+        private readonly clock: () => Date = () => new Date(),
+    ) {
+        this.state = new PluginState(ctx);
+        this.client = new DailyClient(() => this.state.config.requestTimeoutSeconds, this.abortController.signal, fetcher);
+    }
+    /**
+     * 接管为当前生效实例并停用上一个实例。
+     * 返回被接管的旧实例，调用方可等待其排空。
+     */
+    static takeOver(instance: DailyRuntime): DailyRuntime | undefined {
+        const candidate = instance as DailyRuntime & { registered?: boolean };
+        const previous = DailyRuntime.current;
+        DailyRuntime.current = instance;
+        candidate.registered = true;
+        if (previous && previous !== instance) previous.active = false;
+        return previous;
+    }
+    static get active(): DailyRuntime | undefined {
+        return DailyRuntime.current?.active ? DailyRuntime.current : undefined;
+    }
+    get isActive(): boolean { return this.active; }
+    /** 只有当本实例是当前生效实例时才处理事件。 */
+    private get isCurrent(): boolean { return DailyRuntime.current === undefined || DailyRuntime.current === this; }
+    start(): void {
+        if (!this.active || this.timer) return;
+        const config = this.state.config;
+        if (!parseGroupIds(config.scheduledGroups).length) {
+            this.ctx.logger.info('定时推送群号为空，不会自动发送；请在插件配置中填写目标群。');
         }
-    });
-
-    // ==================== 群管理（无鉴权）====================
-
-    /** 获取群列表（附带各群启用状态） */
-    router.getNoAuth('/groups', async (_req, res) => {
-        try {
-            const groups = await ctx.actions.call(
-                'get_group_list',
-                {},
-                ctx.adapterName,
-                ctx.pluginManager.config
-            ) as Array<{ group_id: number; group_name: string; member_count: number; max_member_count: number }>;
-
-            const groupsWithConfig = (groups || []).map((group) => {
-                const groupId = String(group.group_id);
-                return {
-                    group_id: group.group_id,
-                    group_name: group.group_name,
-                    member_count: group.member_count,
-                    max_member_count: group.max_member_count,
-                    enabled: pluginState.isGroupEnabled(groupId),
-                };
-            });
-
-            res.json({ code: 0, data: groupsWithConfig });
-        } catch (e) {
-            ctx.logger.error('获取群列表失败:', e);
-            res.status(500).json({ code: -1, message: String(e) });
+        if (!parseGroupIds(config.keywordGroups).length) {
+            this.ctx.logger.info('关键词触发群号为空，“今日图片”不会在任何群生效；请在插件配置中填写目标群。');
         }
-    });
+        this.timer = setInterval(() => { void this.tick(); }, 20_000);
+        this.timer.unref?.();
+        void this.tick();
+    }
+    async stop(): Promise<void> {
+        this.active = false;
+        if (DailyRuntime.current === this) DailyRuntime.current = undefined;
+        if (this.timer) clearInterval(this.timer);
+        this.timer = undefined;
+        this.abortController.abort();
+        await Promise.allSettled([this.scheduledTask, ...this.keywordTasks.values()].filter(Boolean));
+        this.lastTriggerAt.clear();
+        this.handledMessages.clear();
+    }
+    configChanged(): void {
+        this.nextAttempt = 0;
+        void this.tick();
+    }
+    private scheduledAllowed(group: string): boolean {
+        const config = this.state.config;
+        return this.active && this.isCurrent && config.enabled && config.scheduledEnabled
+            && parseGroupIds(config.scheduledGroups).includes(group);
+    }
+    /** 白名单为空即视为“未配置”，必须 fail-closed（不回任何群）。 */
+    private keywordAllowed(group: string): boolean {
+        const config = this.state.config;
+        if (!this.active || !this.isCurrent || !config.enabled || !config.keywordEnabled) return false;
+        const groups = parseGroupIds(config.keywordGroups);
+        return groups.length > 0 && groups.includes(group);
+    }
 
-    /** 更新单个群配置 */
-    router.postNoAuth('/groups/:id/config', async (req, res) => {
+    async tick(now = this.clock()): Promise<void> {
+        const config = this.state.config;
+        if (!this.active || !config.enabled || !config.scheduledEnabled || !isAfterRelease(now)) return;
+        if (this.scheduledTask || now.getTime() < this.nextAttempt) return;
+        const date = contentDate(now);
+        const groups = parseGroupIds(config.scheduledGroups).filter(id => !this.state.wasDelivered(date, id));
+        if (!groups.length) return;
+        this.nextAttempt = now.getTime() + 60_000;
+        const task = this.deliverScheduled(now, date, groups);
+        this.scheduledTask = task;
+        try { await task; }
+        finally { if (this.scheduledTask === task) this.scheduledTask = undefined; }
+    }
+    private async deliverScheduled(now: Date, date: string, groups: string[]): Promise<void> {
         try {
-            const groupId = req.params?.id;
-            if (!groupId) {
-                return res.status(400).json({ code: -1, message: '缺少群 ID' });
+            // 定时任务不复用关键词的旧缓存，07:21 必须重新查询。
+            const daily = await this.client.get(now, true);
+            for (const group of groups) {
+                if (!this.scheduledAllowed(group) || contentDate(this.clock()) !== date) continue;
+                const ok = await this.deliver(group, daily);
+                if (ok) this.state.markDelivered(date, group);
             }
-
-            const body = req.body as Record<string, unknown> | undefined;
-            const enabled = body?.enabled;
-            pluginState.updateGroupConfig(groupId, { enabled: Boolean(enabled) });
-            ctx.logger.info(`群 ${groupId} 配置已更新: enabled=${enabled}`);
-            res.json({ code: 0, message: 'ok' });
-        } catch (err) {
-            ctx.logger.error('更新群配置失败:', err);
-            res.status(500).json({ code: -1, message: String(err) });
+        } catch (error) {
+            if (this.active) this.ctx.logger.warn('每日定时推送失败，将于一分钟后重试:', error);
         }
-    });
+    }
+    private async deliver(group: string, daily: DailyData): Promise<boolean> {
+        const ok = await sendGroupMessage(this.ctx, group, buildDailyMessage(daily, this.state.config.compactMode), this.abortController.signal);
+        if (ok) this.ctx.logger.info(`LC0 图片已推送到群 ${group}（${daily.date}）`);
+        return ok;
+    }
+    /**
+     * 计算某群剩余的冷却毫秒数。
+     * 冷却时长取“配置值”与“本次记录的有效值”中的较大者，
+     * 这样故障兜底的十秒冷却在 cooldownSeconds=0 时同样生效。
+     */
+    private cooldownRemaining(group: string, now: number): number {
+        const entry = this.lastTriggerAt.get(group);
+        if (!entry) return 0;
+        const configured = Math.max(0, this.state.config.cooldownSeconds) * 1000;
+        const effective = Math.max(configured, entry.minimumMs);
+        if (effective <= 0) return 0;
+        const elapsed = now - entry.startedAt;
+        // 时钟回拨时按“仍在冷却”处理，避免误放行。
+        if (elapsed < 0) return effective;
+        return Math.max(0, effective - elapsed);
+    }
+    /**
+     * 记录冷却起点；在真正发起请求之前调用，避免并发穿透。
+     * minimumMs 用于故障兜底，可高于配置值。
+     */
+    private armCooldown(group: string, now: number, minimumMs = 0): void {
+        this.lastTriggerAt.set(group, { startedAt: now, minimumMs: Math.max(0, minimumMs) });
+    }
+    private messageKey(event: OB11Message): string | undefined {
+        const id = (event as { message_id?: number | string }).message_id;
+        // 只有拿得到明确的消息 id 时才做去重，避免把用户短时间内重复发送的
+        // 相同内容误判为框架重复投递。
+        if (id === undefined || id === null || String(id) === '') return undefined;
+        return `id:${event.group_id}:${id}`;
+    }
+    async onMessage(event: OB11Message): Promise<void> {
+        if (!this.active || !this.isCurrent) return;
+        if (event.message_type !== 'group' || !event.group_id) return;
+        if (String(event.user_id) === String(event.self_id)) return;
+        const group = String(event.group_id);
+        if (!this.keywordAllowed(group) || !isTodayImageCommand(event)) return;
 
-    /** 批量更新群配置 */
-    router.postNoAuth('/groups/bulk-config', async (req, res) => {
+        const key = this.messageKey(event);
+        if (key !== undefined) {
+            if (this.handledMessages.has(key)) return;
+            // 先占位再判断冷却，确保同一事件不会被并发或重复投递处理两次。
+            this.handledMessages.add(key);
+            if (this.handledMessages.size > 500) {
+                const oldest = this.handledMessages.values().next().value;
+                if (oldest !== undefined) this.handledMessages.delete(oldest);
+            }
+        }
+
+        const now = this.clock().getTime();
+        if (this.keywordTasks.has(group) || this.cooldownRemaining(group, now) > 0) return;
+        // 在请求前上锁并起算冷却，阻止多个并发消息绕过冷却。
+        this.armCooldown(group, now);
+        const task = this.deliverKeyword(group);
+        this.keywordTasks.set(group, task);
+        try { await task; }
+        finally { if (this.keywordTasks.get(group) === task) this.keywordTasks.delete(group); }
+    }
+    private async deliverKeyword(group: string): Promise<void> {
         try {
-            const body = req.body as Record<string, unknown> | undefined;
-            const { enabled, groupIds } = body || {};
-
-            if (typeof enabled !== 'boolean' || !Array.isArray(groupIds)) {
-                return res.status(400).json({ code: -1, message: '参数错误' });
-            }
-
-            for (const groupId of groupIds) {
-                pluginState.updateGroupConfig(String(groupId), { enabled });
-            }
-
-            ctx.logger.info(`批量更新群配置完成 | 数量: ${groupIds.length}, enabled=${enabled}`);
-            res.json({ code: 0, message: 'ok' });
-        } catch (err) {
-            ctx.logger.error('批量更新群配置失败:', err);
-            res.status(500).json({ code: -1, message: String(err) });
+            let daily = await this.client.get(this.clock());
+            // 网络请求跨过 07:21 时重新取新日数据，不发送昨日图片。
+            if (daily.date !== contentDate(this.clock())) daily = await this.client.get(this.clock(), true);
+            if (!this.keywordAllowed(group)) return;
+            if (!await this.deliver(group, daily)) throw new Error('QQ群发送失败');
+        } catch (error) {
+            if (this.abortController.signal.aborted || !this.keywordAllowed(group)) return;
+            this.ctx.logger.warn('今日图片获取失败:', error);
+            // 失败时至少保留十秒冷却，避免故障时刷屏。
+            this.armCooldown(group, this.clock().getTime(), 10_000);
+            await sendGroupMessage(this.ctx, group, [{
+                type: 'text', data: { text: '今日 LC0 图片暂时不可用，请稍后再试。' },
+            }], this.abortController.signal);
         }
-    });
-
-    // TODO: 在这里添加你的自定义 API 路由
-
-    ctx.logger.debug('API 路由注册完成');
+    }
 }
