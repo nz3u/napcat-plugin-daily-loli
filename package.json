@@ -1,14 +1,14 @@
-{
+﻿{
   "name": "napcat-plugin-daily-loli",
-  "plugin": "每日 LC0 图片",
-  "version": "1.0.1",
+  "plugin": "姣忔棩 LC0 鍥剧墖",
+  "version": "1.0.2",
   "type": "module",
   "main": "index.mjs",
-  "description": "QQ群每日北京时间 07:21 推送 LC0 图片，支持今日图片关键词和独立开关",
+  "description": "QQ缇ゆ瘡鏃ュ寳浜椂闂?07:21 鎺ㄩ€?LC0 鍥剧墖锛屾敮鎸佷粖鏃ュ浘鐗囧叧閿瘝鍜岀嫭绔嬪紑鍏?,
   "author": "Delphinm",
   "license": "MIT",
   "keywords": ["napcat", "plugin", "qq", "daily", "lc0"],
-  "napcat": { "tags": ["工具"], "minVersion": "4.14.0", "homepage": "", "icon": "icon.png" },
+  "napcat": { "tags": ["宸ュ叿"], "minVersion": "4.14.0", "homepage": "", "icon": "icon.png" },
   "devDependencies": {
     "@types/node": "^20.19.33",
     "typescript": "^5.9.3",
