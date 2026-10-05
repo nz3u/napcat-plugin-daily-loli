@@ -29,7 +29,7 @@ export default defineConfig({
             fs.writeFileSync(resolve(root, 'dist/package.json'), JSON.stringify({
                 name, plugin, version, type, main, description, author, license, napcat,
             }, null, 2));
-            for (const file of ['README.md', 'LICENSE', 'icon.png']) {
+            for (const file of ['README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'icon.png']) {
                 fs.copyFileSync(resolve(root, file), resolve(root, 'dist', file));
             }
         },

@@ -24,6 +24,14 @@ try {
     const pkg = JSON.parse(fs.readFileSync(path.join(root, 'dist/package.json'), 'utf8'));
     assert.equal(pkg.name, 'napcat-plugin-daily-loli');
     assert.equal(pkg.main, 'index.mjs');
+    assert.equal(pkg.license, 'GPL-3.0-only', '构建包应声明 GPLv3-only');
+    for (const file of ['LICENSE', 'THIRD_PARTY_NOTICES.md']) {
+        assert.equal(
+            fs.readFileSync(path.join(root, 'dist', file), 'utf8'),
+            fs.readFileSync(path.join(root, file), 'utf8'),
+            `构建产物应完整包含 ${file}`,
+        );
+    }
     assert.ok(!pkg.dependencies);
     assert.equal(pkg.napcat?.icon, 'icon.png', 'package.json 应声明 icon');
     assert.ok(fs.existsSync(path.join(root, 'dist/icon.png')), '构建产物应包含 icon.png');

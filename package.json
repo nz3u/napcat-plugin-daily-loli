@@ -6,7 +6,7 @@
   "main": "index.mjs",
   "description": "QQ群每日北京时间 07:21 推送 LC0 图片，支持今日图片关键词和独立开关",
   "author": "Delphinm",
-  "license": "MIT",
+  "license": "GPL-3.0-only",
   "keywords": ["napcat", "plugin", "qq", "daily", "lc0"],
   "napcat": { "tags": ["工具"], "minVersion": "4.14.0", "homepage": "", "icon": "icon.png" },
   "devDependencies": {

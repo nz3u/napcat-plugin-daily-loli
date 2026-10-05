@@ -147,4 +147,8 @@ pnpm run test:package
 
 ## 许可
 
-代码沿用模板的 MIT 许可。图片及相关作者信息的权利归相应作者或来源所有。
+本项目整体采用 **GNU General Public License v3.0 only（SPDX：`GPL-3.0-only`）**，完整条款见 [LICENSE](<LICENSE>)，官方文本见 [GNU GPLv3](https://www.gnu.org/licenses/gpl-3.0.html)。本项目不提供任何担保；再分发和修改须遵守 GPLv3，包括适用的对应源代码提供义务。
+
+原 NapCat 插件模板中的代码保留其 MIT 版权及许可声明，见 [第三方许可声明](<THIRD_PARTY_NOTICES.md>)；这不表示本项目整体采用 MIT 或双重许可。此前已按 MIT 发布的版本所授予的许可不因本次变更而撤销。
+
+图片及相关作者信息的权利归相应作者或来源所有，不因本项目代码许可变更而转移。
