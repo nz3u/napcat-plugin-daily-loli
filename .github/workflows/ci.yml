@@ -51,4 +51,5 @@ jobs:
             dist/package.json
             dist/README.md
             dist/LICENSE
+            dist/icon.png
           if-no-files-found: error

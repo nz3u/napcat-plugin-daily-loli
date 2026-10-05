@@ -71,11 +71,11 @@ jobs:
           # 复制需要的文件到临时目录
           cp dist/index.mjs release/
           cp dist/package.json release/
-          cp dist/README.md dist/LICENSE release/
+          cp dist/README.md dist/LICENSE dist/icon.png release/
 
           # 进入临时目录并压缩
           cd release
-          zip -r ../${PLUGIN_NAME}.zip index.mjs package.json README.md LICENSE
+          zip -r ../${PLUGIN_NAME}.zip index.mjs package.json README.md LICENSE icon.png
 
       - name: Verify zip contents
         run: |

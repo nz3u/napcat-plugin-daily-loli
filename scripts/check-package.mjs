@@ -25,6 +25,8 @@ try {
     assert.equal(pkg.name, 'napcat-plugin-daily-loli');
     assert.equal(pkg.main, 'index.mjs');
     assert.ok(!pkg.dependencies);
+    assert.equal(pkg.napcat?.icon, 'icon.png', 'package.json 应声明 icon');
+    assert.ok(fs.existsSync(path.join(root, 'dist/icon.png')), '构建产物应包含 icon.png');
     for (const name of ['plugin_init', 'plugin_onmessage', 'plugin_cleanup', 'plugin_get_config', 'plugin_set_config']) {
         assert.equal(typeof plugin[name], 'function');
     }
