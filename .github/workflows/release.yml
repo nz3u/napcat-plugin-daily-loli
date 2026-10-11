@@ -87,18 +87,30 @@ jobs:
         run: |
           CURRENT_TAG="${{ steps.version.outputs.version }}"
 
-          # 获取上一个 tag
+          # 获取上一个 tag：只取版本排序上严格早于当前版本的 tag。
+          # 不能只用 grep -v 排除同名，否则重发旧版本时会把更新的 tag 当成基准。
           git fetch --tags --force
-          PREV_TAG=$(git tag -l "v*" --sort=version:refname | grep -v "$CURRENT_TAG" | tail -1)
+          PREV_TAG=""
+          for t in $(git tag -l "v*" --sort=version:refname); do
+            [ "$t" = "$CURRENT_TAG" ] && continue
+            # 排序升序，命中当前版本即停止，此前最后一个就是上一版。
+            if [ "$(printf '%s\n%s\n' "$t" "$CURRENT_TAG" | sort -V | head -1)" != "$t" ]; then break; fi
+            PREV_TAG="$t"
+          done
 
-          if [ -z "$PREV_TAG" ]; then
-            PREV_TAG=$(git rev-list --max-parents=0 HEAD | head -1)
+          # 只有本地能解析出的 tag 才能作为 compare 基准；首个版本置空，交给 GitHub 自动选择。
+          if [ -n "$PREV_TAG" ] && ! git rev-parse --verify --quiet "refs/tags/$PREV_TAG" >/dev/null; then
+            PREV_TAG=""
           fi
 
           echo "Current tag: $CURRENT_TAG"
-          echo "Previous tag: $PREV_TAG"
+          echo "Previous tag: ${PREV_TAG:-（由 GitHub 自动选择）}"
 
-          COMMITS=$(git log --pretty=format:'- %s (%h)' "$PREV_TAG"..HEAD 2>/dev/null || git log --pretty=format:'- %s (%h)' -10)
+          if [ -n "$PREV_TAG" ]; then
+            COMMITS=$(git log --pretty=format:'- %s (%h)' "$PREV_TAG"..HEAD 2>/dev/null)
+          else
+            COMMITS=$(git log --pretty=format:'- %s (%h)' -10)
+          fi
 
           # 写入文件供后续步骤使用
           echo "$COMMITS" > commits.txt
@@ -242,12 +254,16 @@ jobs:
           fi
           echo "📝 使用默认 Release Note"
 
+      # body_path 在前，GitHub 自动生成的变更（含 PR 列表与贡献者）追加在后。
+      # previous_tag 显式指定 compare 基准，保证区间与 commits.txt 一致。
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.version }}
           name: Release ${{ steps.version.outputs.version }}
           body_path: CHANGELOG.md
+          generate_release_notes: true
+          previous_tag: ${{ steps.gitlog.outputs.prev_tag }}
           draft: false
           files: |
             napcat-plugin-daily-loli.zip

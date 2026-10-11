@@ -68,6 +68,95 @@ test('定时失败只重试失败的群，不重发已成功群', async t => {
     assert.deepEqual(f.sends.map(value => value.group_id), ['123456789', '987654321', '987654321']);
 });
 
+test('连续失败达到上限后停止当天重试并发送提醒', async t => {
+    const f = fixture(t);
+    f.runtime.state.replaceConfig({ ...DEFAULT_CONFIG, scheduledGroups: '123456789', maxRetryAttempts: 3 });
+    const runtime = f.activate(new DailyRuntime(f.ctx, (async () => {
+        throw new Error('interface down');
+    }) as typeof fetch, () => f.now));
+    f.instances.push(runtime);
+    runtime.state.replaceConfig({ ...DEFAULT_CONFIG, scheduledGroups: '123456789', maxRetryAttempts: 3 });
+    for (let i = 0; i < 3; i++) { await runtime.tick(); f.advance(60_000); }
+    // 第 3 次失败后应发出一条提醒，并停止后续重试。
+    const alerts = f.sends.filter(value => (value.message[0].data as { text: string }).text.includes('推送失败提醒'));
+    assert.equal(alerts.length, 1, '达到上限应发送一次提醒');
+    assert.deepEqual(alerts.map(value => value.group_id), ['123456789']);
+    // 继续推进时间也不再重试，不再重复提醒。
+    for (let i = 0; i < 5; i++) { await runtime.tick(); f.advance(60_000); }
+    assert.equal(f.sends.filter(value => (value.message[0].data as { text: string }).text.includes('推送失败提醒')).length, 1);
+});
+
+test('关闭失败提醒后只记录日志，不向群发送', async t => {
+    const f = fixture(t);
+    const config = { ...DEFAULT_CONFIG, scheduledGroups: '123456789', maxRetryAttempts: 2, failureAlertEnabled: false };
+    const runtime = f.activate(new DailyRuntime(f.ctx, (async () => {
+        throw new Error('interface down');
+    }) as typeof fetch, () => f.now));
+    f.instances.push(runtime);
+    runtime.state.replaceConfig(config);
+    for (let i = 0; i < 2; i++) { await runtime.tick(); f.advance(60_000); }
+    assert.equal(f.sends.length, 0, '关闭提醒后不应发送任何消息');
+    for (let i = 0; i < 3; i++) { await runtime.tick(); f.advance(60_000); }
+    assert.equal(f.sends.length, 0, '停止重试后也不再发送');
+});
+
+test('中途成功后连续失败计数归零，不会误触发停止', async t => {
+    const f = fixture(t);
+    let fail = true;
+    f.ctx.actions.call = async (_action, params) => {
+        f.sends.push(params);
+        if (fail) throw new Error('muted');
+        return { message_id: 1 };
+    };
+    const config = { ...DEFAULT_CONFIG, scheduledGroups: '123456789', maxRetryAttempts: 3 };
+    f.runtime.state.replaceConfig(config);
+    // 失败两次（未达上限）
+    await f.runtime.tick(); f.advance(60_000);
+    await f.runtime.tick(); f.advance(60_000);
+    // 第三次成功，计数归零
+    fail = false;
+    await f.runtime.tick();
+    assert.equal(f.sends.filter(value => (value.message[0].data as { text: string }).text.includes('推送失败提醒')).length, 0);
+    // 之后又失败两次也不该停止（计数已重置）
+    fail = true;
+    const runtime = f.runtime;
+    runtime.state.updateConfig({ scheduledGroups: '987654321' });
+    await runtime.tick(); f.advance(60_000);
+    await runtime.tick(); f.advance(60_000);
+    assert.equal(f.sends.filter(value => (value.message[0].data as { text: string }).text.includes('推送失败提醒')).length, 0);
+});
+
+test('重新保存配置可恢复已被停止的重试', async t => {
+    const f = fixture(t);
+    let fail = true;
+    f.ctx.actions.call = async (_action, params) => {
+        f.sends.push(params);
+        if (fail) throw new Error('muted');
+        return { message_id: 1 };
+    };
+    const config = { ...DEFAULT_CONFIG, scheduledGroups: '123456789', maxRetryAttempts: 2 };
+    f.runtime.state.replaceConfig(config);
+    await f.runtime.tick(); f.advance(60_000);
+    await f.runtime.tick(); f.advance(60_000);
+    assert.equal(f.sends.filter(value => (value.message[0].data as { text: string }).text.includes('推送失败提醒')).length, 1);
+    // 人工修复后重新保存配置：恢复重试并成功发送。
+    fail = false;
+    f.runtime.state.updateConfig({ scheduledGroups: '123456789', maxRetryAttempts: 2 });
+    f.runtime.configChanged();
+    await f.runtime.tick();
+    const sent = f.sends.filter(value => (value.message[0].data as { text: string }).text.includes(date));
+    assert.ok(sent.length >= 1, '恢复后应重新尝试并发送当日内容');
+});
+
+test('最大连续失败次数为 0 时不限制重试，也不发提醒', async t => {
+    const f = fixture(t);
+    f.ctx.actions.call = async (_action, params) => { f.sends.push(params); throw new Error('muted'); };
+    f.runtime.state.replaceConfig({ ...DEFAULT_CONFIG, scheduledGroups: '123456789', maxRetryAttempts: 0 });
+    for (let i = 0; i < 15; i++) { await f.runtime.tick(); f.advance(60_000); }
+    assert.equal(f.sends.filter(value => (value.message[0].data as { text: string }).text.includes('推送失败提醒')).length, 0);
+    assert.ok(f.sends.length >= 15, '不限制时应持续重试');
+});
+
 test('读取持久化历史，重启后不重复；新增群补发', async t => {
     const f = fixture(t); await f.runtime.tick(); await f.runtime.stop();
     const next = new DailyRuntime(f.ctx, f.fetcher, () => f.now); f.instances.push(next); f.activate(next);
@@ -281,6 +370,6 @@ test('配置 Schema 非响应式，只有保存后应用，避免编辑群号触
         boolean: builder('boolean'), text: builder('string'), number: builder('number'),
     } } as unknown as NapCatPluginContext;
     const schema = buildConfigSchema(ctx);
-    assert.equal(schema.filter(value => value.key).length, 8);
+    assert.equal(schema.filter(value => value.key).length, 10);
     assert.ok(schema.every(value => !value.reactive));
 });

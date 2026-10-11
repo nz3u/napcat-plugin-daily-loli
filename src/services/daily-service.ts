@@ -1,4 +1,4 @@
-import type { DailyCard, DailyData, MessageSegment } from '../types';
+import type { DailyCard, DailyData, MessageSegment, PublishableTag } from '../types';
 
 export const API_ENDPOINTS = [
     'https://loliconey.tsuki.ga/api/v1/daily?badge=LC0',
@@ -32,14 +32,25 @@ export function httpUrl(value: unknown): string {
     } catch { return ''; }
 }
 
-/** 白名单 fail-closed：非 LC0/缺少标签的卡片完全丢弃，不回退到其它评级。 */
+/**
+ * 可发布标签的白名单。`LC YJ` 与 `LC0` 是上游对同一档内容的两种写法，都允许发布。
+ * 比较时忽略大小写和多余空白；其它评级或缺失标签一律丢弃，绝不回退到其它评级。
+ */
+const PUBLISHABLE_TAGS = new Set(['LC0', 'LC YJ']);
+export function normalizeTag(value: unknown): PublishableTag | '' {
+    return typeof value === 'string' && PUBLISHABLE_TAGS.has(value.trim().toUpperCase()) ? 'LC0' : '';
+}
+
+/** 白名单 fail-closed：非可发布标签/缺少标签的卡片完全丢弃，不回退到其它评级。 */
 export function parseDailyData(raw: unknown, expectedDate: string): DailyData {
     if (!record(raw) || raw.date !== expectedDate || !Array.isArray(raw.cards)) {
         throw new Error(`接口尚未更新到内容日 ${expectedDate}，或响应格式错误`);
     }
     const cards: DailyCard[] = [];
     for (const value of raw.cards.slice(0, 10)) {
-        if (!record(value) || value.tags !== 'LC0') continue;
+        if (!record(value)) continue;
+        const tags = normalizeTag(value.tags);
+        if (!tags) continue;
         const imgUrl = httpUrl(value.imgUrl);
         if (!imgUrl) continue;
         const image = new URL(imgUrl);
@@ -51,7 +62,7 @@ export function parseDailyData(raw: unknown, expectedDate: string): DailyData {
             id: /^[1-9]\d*$/.test(String(ids[index])) ? String(ids[index]) : '',
         })).filter(pair => pair.name);
         cards.push({
-            tags: 'LC0', imgUrl,
+            tags, imgUrl,
             artistName: text(value.artistName, 200), artistUrl: httpUrl(value.artistUrl),
             sourceUrl: httpUrl(value.sourceUrl),
             characterNames: pairs.map(pair => pair.name), characterIds: pairs.map(pair => pair.id),
@@ -62,7 +73,9 @@ export function parseDailyData(raw: unknown, expectedDate: string): DailyData {
         });
     }
     if (!cards.length) throw new Error('当日没有可用的 LC0 图片');
-    return { date: expectedDate, cards };
+    // 公告随当日内容一起发布，只占一行；空字符串等同没有公告。
+    const announcement = text(raw.announcement, 500).trim();
+    return { date: expectedDate, ...(announcement ? { announcement } : {}), cards };
 }
 
 /**
@@ -74,7 +87,11 @@ export function parseDailyData(raw: unknown, expectedDate: string): DailyData {
  * 两个版本都不再输出画师主页和单独的 bgm.tv 链接行。
  */
 export function buildDailyMessage(daily: DailyData, compact = false): MessageSegment[] {
-    return daily.cards.flatMap((card, index): MessageSegment[] => {
+    // 公告是当日级别的：无论几张卡片都只输出一行，放在最前面一起发布。
+    const announcement: MessageSegment[] = daily.announcement
+        ? [{ type: 'text', data: { text: `公告：${daily.announcement}\n` } }]
+        : [];
+    return announcement.concat(daily.cards.flatMap((card, index): MessageSegment[] => {
         const lines = [`今日图片 · ${daily.date} · LC0${daily.cards.length > 1 ? ` (${index + 1}/${daily.cards.length})` : ''}`];
         // 角色格式：xxx（#id）；没有 id 时只写名字。
         const characters = card.characterNames.map((name, i) => {
@@ -99,7 +116,7 @@ export function buildDailyMessage(daily: DailyData, compact = false): MessageSeg
             { type: 'text', data: { text: `${lines.join('\n')}\n` } },
             { type: 'image', data: { file: card.imgUrl } },
         ];
-    });
+    }));
 }
 
 export class DailyClient {
