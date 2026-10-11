@@ -39,7 +39,7 @@ try {
         assert.equal(typeof plugin[name], 'function');
     }
     await plugin.plugin_init(ctx);
-    assert.equal(plugin.plugin_config_ui.filter(item => item.key).length, 8);
+    assert.equal(plugin.plugin_config_ui.filter(item => item.key).length, 10);
     assert.equal((await plugin.plugin_get_config(ctx)).scheduledGroups, '');
     assert.equal((await plugin.plugin_get_config(ctx)).keywordGroups, '');
     assert.equal((await plugin.plugin_get_config(ctx)).compactMode, false);

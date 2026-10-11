@@ -10,6 +10,8 @@ export const DEFAULT_CONFIG: PluginConfig = {
     compactMode: false,
     cooldownSeconds: 60,
     requestTimeoutSeconds: 15,
+    maxRetryAttempts: 10,
+    failureAlertEnabled: true,
 };
 
 export function parseGroupIds(value: string): string[] {
@@ -20,14 +22,14 @@ export function sanitizeConfig(raw: unknown): PluginConfig {
     const result = { ...DEFAULT_CONFIG };
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return result;
     const input = raw as Record<string, unknown>;
-    for (const key of ['enabled', 'scheduledEnabled', 'keywordEnabled', 'compactMode'] as const) {
+    for (const key of ['enabled', 'scheduledEnabled', 'keywordEnabled', 'compactMode', 'failureAlertEnabled'] as const) {
         if (typeof input[key] === 'boolean') result[key] = input[key];
     }
     for (const key of ['scheduledGroups', 'keywordGroups'] as const) {
         if (typeof input[key] === 'string') result[key] = parseGroupIds(input[key]).join(',');
     }
     for (const [key, min, max] of [
-        ['cooldownSeconds', 0, 3600], ['requestTimeoutSeconds', 3, 60],
+        ['cooldownSeconds', 0, 3600], ['requestTimeoutSeconds', 3, 60], ['maxRetryAttempts', 0, 100],
     ] as const) {
         const value = input[key];
         if (typeof value === 'number' && Number.isFinite(value)) {
@@ -40,7 +42,7 @@ export function sanitizeConfig(raw: unknown): PluginConfig {
 export function buildConfigSchema(ctx: NapCatPluginContext): PluginConfigSchema {
     const ui = ctx.NapCatConfig;
     return ui.combine(
-        ui.plainText('每日 LC0 图片：固定北京时间 07:21 更新；仅发送标签严格为 LC0 的卡片。不填写群号不会向任何群发送。'),
+        ui.plainText('每日 LC0 图片：固定北京时间 07:21 更新；发送标签为 LC0 或 LC YJ 的卡片，有公告时随内容一起发布。不填写群号不会向任何群发送。'),
         ui.boolean('enabled', '启用插件', true, '总开关', false),
         ui.boolean('scheduledEnabled', '每日定时推送', true, '北京时间 07:21 推送；错过时启动补发当日，失败每分钟重试', false),
         ui.text('scheduledGroups', '定时推送群号', '', '多个群号用逗号、空格或换行分隔；空列表不推送', false),
@@ -49,5 +51,9 @@ export function buildConfigSchema(ctx: NapCatPluginContext): PluginConfigSchema 
         ui.boolean('compactMode', '简略版', false, '只发送日期、评级和角色（写为“xxx（#id）”）；关闭则额外包含画师、作品来源、备注、推荐者', false),
         ui.number('cooldownSeconds', '关键词群冷却（秒）', 60, '同一群的触发间隔，0 表示无冷却', false),
         ui.number('requestTimeoutSeconds', '单个接口超时（秒）', 15, '主接口失败自动尝试备用接口，范围 3–60', false),
+        ui.number('maxRetryAttempts', '最大连续失败次数', 10, '达到后当天停止重试并等待人工排查，0 表示不限制',
+            false),
+        ui.boolean('failureAlertEnabled', '失败提醒', true,
+            '停止重试时向当天尚未成功的定时群发送一条提醒，说明失败次数并请人工排查', false),
     );
 }

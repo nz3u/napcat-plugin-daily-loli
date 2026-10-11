@@ -4,7 +4,7 @@ import { parseGroupIds } from '../config';
 import { PluginState } from '../core/state';
 import { DailyClient, contentDate, isAfterRelease, buildDailyMessage } from './daily-service';
 import { isTodayImageCommand, sendGroupMessage } from '../handlers/message-handler';
-import type { DailyData } from '../types';
+import type { DailyData, MessageSegment } from '../types';
 
 /**
  * 每 20 秒检查北京时间，逐群记录成功状态；重试不会重发已经成功的群。
@@ -20,6 +20,11 @@ export class DailyRuntime {
     private active = true;
     private scheduledTask?: Promise<void>;
     private nextAttempt = 0;
+    /** 连续失败计数所属的内容日；跨日自动重新开始计数。 */
+    private failureDate?: string;
+    private consecutiveFailures = 0;
+    /** 已达到重试上限、停止自动重试的内容日；换日或改配置后恢复。 */
+    private haltedDate?: string;
     private readonly keywordTasks = new Map<string, Promise<void>>();
     /** 记录每个群冷却起点及故障兜底时长，避免时钟问题导致冷却失效。 */
     private readonly lastTriggerAt = new Map<string, { startedAt: number; minimumMs: number }>();
@@ -78,6 +83,10 @@ export class DailyRuntime {
     }
     configChanged(): void {
         this.nextAttempt = 0;
+        // 用户改配置视为一次人工干预：清除停止重试状态并重新计数。
+        this.haltedDate = undefined;
+        this.failureDate = undefined;
+        this.consecutiveFailures = 0;
         void this.tick();
     }
     private scheduledAllowed(group: string): boolean {
@@ -100,6 +109,9 @@ export class DailyRuntime {
         const date = contentDate(now);
         const groups = parseGroupIds(config.scheduledGroups).filter(id => !this.state.wasDelivered(date, id));
         if (!groups.length) return;
+        // 换日重新开始计数，并解除上一日的停止状态。
+        if (this.failureDate !== date) { this.failureDate = date; this.consecutiveFailures = 0; }
+        if (this.haltedDate === date) return;
         this.nextAttempt = now.getTime() + 60_000;
         const task = this.deliverScheduled(now, date, groups);
         this.scheduledTask = task;
@@ -110,13 +122,55 @@ export class DailyRuntime {
         try {
             // 定时任务不复用关键词的旧缓存，07:21 必须重新查询。
             const daily = await this.client.get(now, true);
+            let sent = false;
             for (const group of groups) {
                 if (!this.scheduledAllowed(group) || contentDate(this.clock()) !== date) continue;
                 const ok = await this.deliver(group, daily);
-                if (ok) this.state.markDelivered(date, group);
+                if (ok) { this.state.markDelivered(date, group); sent = true; }
             }
+            // 至少有一个群成功即视为本轮成功，重置连续失败计数。
+            if (sent) { this.consecutiveFailures = 0; return; }
+            this.countFailure(date, groups, '所有目标群发送失败');
         } catch (error) {
-            if (this.active) this.ctx.logger.warn('每日定时推送失败，将于一分钟后重试:', error);
+            this.countFailure(date, groups, error instanceof Error ? error.message : String(error));
+        }
+    }
+    /**
+     * 累计一次失败；达到上限时停止当天重试并按需提醒，等待人工排查。
+     *
+     * 计数按内容日隔离：跨日自动从头开始，避免昨日的失败拖住今天。
+     */
+    private countFailure(date: string, groups: string[], reason: string): void {
+        if (this.failureDate !== date) { this.failureDate = date; this.consecutiveFailures = 0; }
+        const limit = Math.max(0, this.state.config.maxRetryAttempts);
+        if (limit === 0) {
+            if (this.active) this.ctx.logger.warn(`每日定时推送失败：${reason}；将于一分钟后重试。`);
+            return;
+        }
+        const attempts = ++this.consecutiveFailures;
+        if (attempts < limit) {
+            if (this.active) {
+                this.ctx.logger.warn(`每日定时推送失败（第 ${attempts}/${limit} 次）：${reason}；将于一分钟后重试。`);
+            }
+            return;
+        }
+        // 到达上限：停止当天重试，不再自动继续，等人工修复配置或环境。
+        if (this.haltedDate === date) return;
+        this.haltedDate = date;
+        const message = `每日定时推送已连续失败 ${attempts} 次，达到上限 ${limit}，当天停止重试，等待人工排查。最后失败原因：${reason}`;
+        if (this.active) this.ctx.logger.error(message);
+        if (!this.state.config.failureAlertEnabled) return;
+        const targets = groups.filter(group => this.scheduledAllowed(group));
+        if (!targets.length) return;
+        void this.sendFailureAlert(targets, message);
+    }
+    private async sendFailureAlert(groups: string[], reason: string): Promise<void> {
+        const message: MessageSegment[] = [{
+            type: 'text',
+            data: { text: `今日图片推送失败提醒：${reason}\n插件当天已停止自动重试，请检查接口、网络、群白名单与机器人发言权限后，在插件配置中重新保存或重载插件以恢复。` },
+        }];
+        for (const group of groups) {
+            await sendGroupMessage(this.ctx, group, message, this.abortController.signal);
         }
     }
     private async deliver(group: string, daily: DailyData): Promise<boolean> {

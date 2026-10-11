@@ -27,14 +27,63 @@ test('北京时间 07:21 边界以及年/月切换', () => {
     assert.equal(contentDate(new Date('2026-03-01T00:00:00+08:00')), '2026-02-28');
 });
 
-test('LC0 白名单：过滤非 LC0、缺失/未知标签，绝不评级回退', () => {
+test('可发布标签白名单：LC0 与 LC YJ 都可发布，其它评级绝不回退', () => {
     const body = raw();
     body.cards.push(raw('OTHER').cards[0], raw('').cards[0]);
     assert.equal(parseDailyData(body, date).cards.length, 1);
-    for (const tag of ['OTHER', '', 'LC0 extra', 'lc0']) assert.throws(() => parseDailyData(raw(tag), date));
+    // 上游对同一档内容的两种写法，大小写与多余空白都接受。
+    for (const tag of ['LC0', 'LC YJ', 'lc yj', 'lc0', '  LC YJ  ']) {
+        const parsed = parseDailyData(raw(tag), date);
+        assert.equal(parsed.cards.length, 1, `标签 ${tag} 应可发布`);
+        assert.equal(parsed.cards[0].tags, 'LC0');
+    }
+    // 非白名单标签、缺失标签、以及擦边写法一律丢弃。
+    for (const tag of ['OTHER', '', 'LC0 extra', 'LC1', 'LCYJ', 'LC  YJ']) {
+        assert.throws(() => parseDailyData(raw(tag), date), `标签 ${tag} 不应发布`);
+    }
+    // 标签字段缺失（undefined / 非字符串）同样不发布。
+    for (const tag of [undefined, null, 0, {}]) {
+        const body = raw();
+        (body.cards[0] as Record<string, unknown>).tags = tag;
+        assert.throws(() => parseDailyData(body, date), `标签 ${String(tag)} 不应发布`);
+    }
     assert.throws(() => parseDailyData({ date, cards: [] }, date));
     assert.throws(() => parseDailyData(raw(), '2026-10-06'));
     assert.throws(() => parseDailyData(null, date));
+});
+
+function segmentsOf(message: ReturnType<typeof buildDailyMessage>): string[] {
+    return message.filter(segment => segment.type === 'text').map(segment => (segment.data as { text: string }).text);
+}
+
+test('公告随当日内容一起发布，只占一行且不与卡片重复', () => {
+    const body = { ...raw(), announcement: '米娜，萝莉节快乐' };
+    const data = parseDailyData(body, date);
+    assert.equal(data.announcement, '米娜，萝莉节快乐');
+    const message = buildDailyMessage(data);
+    const texts = segmentsOf(message);
+    assert.ok(texts[0].includes('公告：米娜，萝莉节快乐'), '首个文本段应为公告行');
+    assert.equal(texts.length, 2, '公告单独一段 + 卡片文本一段');
+    assert.ok(texts[1].includes(date), '卡片文本仍带日期');
+
+    // 简略版同样带公告。
+    assert.ok(segmentsOf(buildDailyMessage(data, true))[0].includes('公告：米娜，萝莉节快乐'));
+
+    // 多卡片时公告只出现在开头一次。
+    const multi = { ...raw(), announcement: '公告测试', cards: [raw().cards[0], raw().cards[0]] };
+    const multiTexts = segmentsOf(buildDailyMessage(parseDailyData(multi, date)));
+    assert.equal(multiTexts.length, 3, '公告一段 + 两张卡片各一段');
+    assert.equal(multiTexts.filter(value => value.includes('公告：')).length, 1, '公告只发一次');
+});
+
+test('无公告或公告为空时不输出公告行', () => {
+    for (const announcement of [undefined, '', '   ', 123]) {
+        const data = parseDailyData({ ...raw(), announcement }, date);
+        assert.equal(data.announcement, undefined, `公告 ${String(announcement)} 应视为无公告`);
+        for (const text of segmentsOf(buildDailyMessage(data))) {
+            assert.ok(!text.includes('公告'), '不应输出公告行');
+        }
+    }
 });
 
 test('图片来源白名单：拒绝内网、文件、CQ、非 HTTPS 和未知域名', () => {

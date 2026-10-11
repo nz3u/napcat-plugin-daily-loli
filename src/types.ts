@@ -9,10 +9,20 @@ export interface PluginConfig {
     compactMode: boolean;
     cooldownSeconds: number;
     requestTimeoutSeconds: number;
+    /** 连续失败达到该次数后停止当天重试，0 表示不限制。 */
+    maxRetryAttempts: number;
+    /** 停止重试时是否向尚未成功的定时群发送一条提醒。 */
+    failureAlertEnabled: boolean;
 }
 
+/**
+ * 上游对同一档内容会使用不同写法；归一化后只保留这两个可发布标签。
+ * 其它评级（含缺失标签）一律丢弃，不回退。
+ */
+export type PublishableTag = 'LC0' | 'LC YJ';
+
 export interface DailyCard {
-    tags: 'LC0';
+    tags: PublishableTag;
     imgUrl: string;
     artistName: string;
     artistUrl: string;
@@ -25,6 +35,8 @@ export interface DailyCard {
 
 export interface DailyData {
     date: string;
+    /** 上游公告；存在时随当日内容一起发布，只占一行。 */
+    announcement?: string;
     cards: DailyCard[];
 }
 

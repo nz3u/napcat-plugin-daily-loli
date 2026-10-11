@@ -1,7 +1,7 @@
 {
   "name": "napcat-plugin-daily-loli",
   "plugin": "每日 LC0 图片",
-  "version": "1.0.1",
+  "version": "1.0.3",
   "type": "module",
   "main": "index.mjs",
   "description": "QQ群每日北京时间 07:21 推送 LC0 图片，支持今日图片关键词和独立开关",
